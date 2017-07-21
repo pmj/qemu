@@ -272,7 +272,7 @@ build_facs(GArray *table_data, BIOSLinker *linker)
 }
 
 /* Load chipset information in FADT */
-static void fadt_setup(AcpiFadtDescriptorRev3 *fadt, AcpiPmInfo *pm)
+static void fadt_setup(AcpiFadtDescriptorRev3 *fadt, AcpiPmInfo *pm, unsigned revision)
 {
     fadt->model = 1;
     fadt->reserved1 = 0;
@@ -306,29 +306,32 @@ static void fadt_setup(AcpiFadtDescriptorRev3 *fadt, AcpiPmInfo *pm)
     fadt->century = RTC_CENTURY;
 
     fadt->flags |= cpu_to_le32(1 << ACPI_FADT_F_RESET_REG_SUP);
-    fadt->reset_value = 0xf;
-    fadt->reset_register.space_id = AML_SYSTEM_IO;
-    fadt->reset_register.bit_width = 8;
-    fadt->reset_register.address = cpu_to_le64(ICH9_RST_CNT_IOPORT);
-    /* The above need not be conditional on machine type because the reset port
-     * happens to be the same on PIIX (pc) and ICH9 (q35). */
-    QEMU_BUILD_BUG_ON(ICH9_RST_CNT_IOPORT != RCR_IOPORT);
+    
+    if (revision >= 3) {
+        fadt->reset_value = 0xf;
+        fadt->reset_register.space_id = AML_SYSTEM_IO;
+        fadt->reset_register.bit_width = 8;
+        fadt->reset_register.address = cpu_to_le64(ICH9_RST_CNT_IOPORT);
+        /* The above need not be conditional on machine type because the reset port
+         * happens to be the same on PIIX (pc) and ICH9 (q35). */
+        QEMU_BUILD_BUG_ON(ICH9_RST_CNT_IOPORT != RCR_IOPORT);
 
-    fadt->xpm1a_event_block.space_id = AML_SYSTEM_IO;
-    fadt->xpm1a_event_block.bit_width = fadt->pm1_evt_len * 8;
-    fadt->xpm1a_event_block.address = cpu_to_le64(pm->io_base);
+        fadt->xpm1a_event_block.space_id = AML_SYSTEM_IO;
+        fadt->xpm1a_event_block.bit_width = fadt->pm1_evt_len * 8;
+        fadt->xpm1a_event_block.address = cpu_to_le64(pm->io_base);
 
-    fadt->xpm1a_control_block.space_id = AML_SYSTEM_IO;
-    fadt->xpm1a_control_block.bit_width = fadt->pm1_cnt_len * 8;
-    fadt->xpm1a_control_block.address = cpu_to_le64(pm->io_base + 0x4);
+        fadt->xpm1a_control_block.space_id = AML_SYSTEM_IO;
+        fadt->xpm1a_control_block.bit_width = fadt->pm1_cnt_len * 8;
+        fadt->xpm1a_control_block.address = cpu_to_le64(pm->io_base + 0x4);
 
-    fadt->xpm_timer_block.space_id = AML_SYSTEM_IO;
-    fadt->xpm_timer_block.bit_width = fadt->pm_tmr_len * 8;
-    fadt->xpm_timer_block.address = cpu_to_le64(pm->io_base + 0x8);
+        fadt->xpm_timer_block.space_id = AML_SYSTEM_IO;
+        fadt->xpm_timer_block.bit_width = fadt->pm_tmr_len * 8;
+        fadt->xpm_timer_block.address = cpu_to_le64(pm->io_base + 0x8);
 
-    fadt->xgpe0_block.space_id = AML_SYSTEM_IO;
-    fadt->xgpe0_block.bit_width = pm->gpe0_blk_len * 8;
-    fadt->xgpe0_block.address = cpu_to_le64(pm->gpe0_blk);
+        fadt->xgpe0_block.space_id = AML_SYSTEM_IO;
+        fadt->xgpe0_block.bit_width = pm->gpe0_blk_len * 8;
+        fadt->xgpe0_block.address = cpu_to_le64(pm->gpe0_blk);
+    }
 }
 
 
@@ -336,29 +339,36 @@ static void fadt_setup(AcpiFadtDescriptorRev3 *fadt, AcpiPmInfo *pm)
 static void
 build_fadt(GArray *table_data, BIOSLinker *linker, AcpiPmInfo *pm,
            unsigned facs_tbl_offset, unsigned dsdt_tbl_offset,
-           const char *oem_id, const char *oem_table_id)
+           const char *oem_id, const char *oem_table_id, unsigned revision)
 {
-    AcpiFadtDescriptorRev3 *fadt = acpi_data_push(table_data, sizeof(*fadt));
+    unsigned fadt_size = revision < 3 ? offsetof(AcpiFadtDescriptorRev3, reset_register) : sizeof(AcpiFadtDescriptorRev3);
+    AcpiFadtDescriptorRev3 *fadt = acpi_data_push(table_data, fadt_size);
     unsigned fw_ctrl_offset = (char *)&fadt->firmware_ctrl - table_data->data;
     unsigned dsdt_entry_offset = (char *)&fadt->dsdt - table_data->data;
     unsigned xdsdt_entry_offset = (char *)&fadt->x_dsdt - table_data->data;
 
+    printf("build_fadt revision %u part 1\n", revision);
     /* FACS address to be filled by Guest linker */
     bios_linker_loader_add_pointer(linker,
         ACPI_BUILD_TABLE_FILE, fw_ctrl_offset, sizeof(fadt->firmware_ctrl),
         ACPI_BUILD_TABLE_FILE, facs_tbl_offset);
 
+    printf("build_fadt revision %u part 2\n", revision);
     /* DSDT address to be filled by Guest linker */
-    fadt_setup(fadt, pm);
+    fadt_setup(fadt, pm, revision);
+    printf("build_fadt revision %u part 3\n", revision);
     bios_linker_loader_add_pointer(linker,
         ACPI_BUILD_TABLE_FILE, dsdt_entry_offset, sizeof(fadt->dsdt),
         ACPI_BUILD_TABLE_FILE, dsdt_tbl_offset);
-    bios_linker_loader_add_pointer(linker,
-        ACPI_BUILD_TABLE_FILE, xdsdt_entry_offset, sizeof(fadt->x_dsdt),
-        ACPI_BUILD_TABLE_FILE, dsdt_tbl_offset);
+    printf("build_fadt revision %u part 4\n", revision);
+    if (revision >= 3) {
+        bios_linker_loader_add_pointer(linker,
+            ACPI_BUILD_TABLE_FILE, xdsdt_entry_offset, sizeof(fadt->x_dsdt),
+            ACPI_BUILD_TABLE_FILE, dsdt_tbl_offset);
+    }
 
     build_header(linker, table_data,
-                 (void *)fadt, "FACP", sizeof(*fadt), 3, oem_id, oem_table_id);
+                 (void *)fadt, "FACP", fadt_size, revision, oem_id, oem_table_id);
 }
 
 void pc_madt_cpu_entry(AcpiDeviceIf *adev, int uid,
@@ -2557,12 +2567,15 @@ build_amd_iommu(GArray *table_data, BIOSLinker *linker)
 }
 
 static GArray *
-build_rsdp(GArray *rsdp_table, BIOSLinker *linker, unsigned rsdt_tbl_offset)
+build_rsdp(GArray *rsdp_table, BIOSLinker *linker, unsigned rsdt_tbl_offset, unsigned xsdt_tbl_offset)
 {
     AcpiRsdpDescriptor *rsdp = acpi_data_push(rsdp_table, sizeof *rsdp);
     unsigned rsdt_pa_size = sizeof(rsdp->rsdt_physical_address);
     unsigned rsdt_pa_offset =
         (char *)&rsdp->rsdt_physical_address - rsdp_table->data;
+    unsigned xsdt_pa_size = sizeof(rsdp->xsdt_physical_address);
+    unsigned xsdt_pa_offset =
+        (char *)&rsdp->xsdt_physical_address - rsdp_table->data;
 
     bios_linker_loader_alloc(linker, ACPI_BUILD_RSDP_FILE, rsdp_table, 16,
                              true /* fseg memory */);
@@ -2573,6 +2586,9 @@ build_rsdp(GArray *rsdp_table, BIOSLinker *linker, unsigned rsdt_tbl_offset)
     bios_linker_loader_add_pointer(linker,
         ACPI_BUILD_RSDP_FILE, rsdt_pa_offset, rsdt_pa_size,
         ACPI_BUILD_TABLE_FILE, rsdt_tbl_offset);
+    bios_linker_loader_add_pointer(linker,
+        ACPI_BUILD_RSDP_FILE, xsdt_pa_offset, xsdt_pa_size,
+        ACPI_BUILD_TABLE_FILE, xsdt_tbl_offset);
 
     /* Checksum to be filled by Guest linker */
     bios_linker_loader_add_checksum(linker, ACPI_BUILD_RSDP_FILE,
@@ -2620,8 +2636,9 @@ void acpi_build(AcpiBuildTables *tables, MachineState *machine)
 {
     PCMachineState *pcms = PC_MACHINE(machine);
     PCMachineClass *pcmc = PC_MACHINE_GET_CLASS(pcms);
-    GArray *table_offsets;
-    unsigned facs, dsdt, rsdt, fadt;
+    GArray *table_offsets_rsdt;
+    GArray *table_offsets_xsdt;
+    unsigned facs, dsdt, rsdt, xsdt, fadt_r1;
     AcpiPmInfo pm;
     AcpiMiscInfo misc;
     AcpiMcfgInfo mcfg;
@@ -2637,7 +2654,9 @@ void acpi_build(AcpiBuildTables *tables, MachineState *machine)
     acpi_get_pci_holes(&pci_hole, &pci_hole64);
     acpi_get_slic_oem(&slic_oem);
 
-    table_offsets = g_array_new(false, true /* clear */,
+    table_offsets_rsdt = g_array_new(false, true /* clear */,
+                                        sizeof(uint32_t));
+    table_offsets_xsdt = g_array_new(false, true /* clear */,
                                         sizeof(uint32_t));
     ACPI_BUILD_DPRINTF("init ACPI tables\n");
 
@@ -2664,60 +2683,76 @@ void acpi_build(AcpiBuildTables *tables, MachineState *machine)
      */
     aml_len += tables_blob->len - dsdt;
 
-    /* ACPI tables pointed to by RSDT */
-    fadt = tables_blob->len;
-    acpi_add_table(table_offsets, tables_blob);
+    /* ACPI tables pointed to by RSDT/XSDT */
+    /* ACPI 1.0 compatible FADT referenced by RSDT only, 2.0 by XSDT only */
+    fadt_r1 = tables_blob->len;
+    acpi_add_table(table_offsets_rsdt, tables_blob);
     build_fadt(tables_blob, tables->linker, &pm, facs, dsdt,
-               slic_oem.id, slic_oem.table_id);
-    aml_len += tables_blob->len - fadt;
+               slic_oem.id, slic_oem.table_id, 1);
+    acpi_add_table(table_offsets_xsdt, tables_blob);
+    build_fadt(tables_blob, tables->linker, &pm, facs, dsdt,
+               slic_oem.id, slic_oem.table_id, 3);
+    
+    aml_len += tables_blob->len - fadt_r1;
 
-    acpi_add_table(table_offsets, tables_blob);
+    acpi_add_table(table_offsets_rsdt, tables_blob);
+    acpi_add_table(table_offsets_xsdt, tables_blob);
     build_madt(tables_blob, tables->linker, pcms);
 
     vmgenid_dev = find_vmgenid_dev();
     if (vmgenid_dev) {
-        acpi_add_table(table_offsets, tables_blob);
+        acpi_add_table(table_offsets_rsdt, tables_blob);
+        acpi_add_table(table_offsets_xsdt, tables_blob);
         vmgenid_build_acpi(VMGENID(vmgenid_dev), tables_blob,
                            tables->vmgenid, tables->linker);
     }
 
     if (misc.has_hpet) {
-        acpi_add_table(table_offsets, tables_blob);
+        acpi_add_table(table_offsets_rsdt, tables_blob);
+        acpi_add_table(table_offsets_xsdt, tables_blob);
         build_hpet(tables_blob, tables->linker);
     }
     if (misc.tpm_version != TPM_VERSION_UNSPEC) {
-        acpi_add_table(table_offsets, tables_blob);
+        acpi_add_table(table_offsets_rsdt, tables_blob);
+        acpi_add_table(table_offsets_xsdt, tables_blob);
         build_tpm_tcpa(tables_blob, tables->linker, tables->tcpalog);
 
         if (misc.tpm_version == TPM_VERSION_2_0) {
-            acpi_add_table(table_offsets, tables_blob);
+            acpi_add_table(table_offsets_rsdt, tables_blob);
+            acpi_add_table(table_offsets_xsdt, tables_blob);
             build_tpm2(tables_blob, tables->linker);
         }
     }
     if (pcms->numa_nodes) {
-        acpi_add_table(table_offsets, tables_blob);
+        acpi_add_table(table_offsets_rsdt, tables_blob);
+        acpi_add_table(table_offsets_xsdt, tables_blob);
         build_srat(tables_blob, tables->linker, machine);
         if (have_numa_distance) {
-            acpi_add_table(table_offsets, tables_blob);
+            acpi_add_table(table_offsets_rsdt, tables_blob);
+            acpi_add_table(table_offsets_xsdt, tables_blob);
             build_slit(tables_blob, tables->linker);
         }
     }
     if (acpi_get_mcfg(&mcfg)) {
-        acpi_add_table(table_offsets, tables_blob);
+        acpi_add_table(table_offsets_rsdt, tables_blob);
+        acpi_add_table(table_offsets_xsdt, tables_blob);
         build_mcfg_q35(tables_blob, tables->linker, &mcfg);
     }
     if (x86_iommu_get_default()) {
         IommuType IOMMUType = x86_iommu_get_type();
         if (IOMMUType == TYPE_AMD) {
-            acpi_add_table(table_offsets, tables_blob);
+            acpi_add_table(table_offsets_rsdt, tables_blob);
+            acpi_add_table(table_offsets_xsdt, tables_blob);
             build_amd_iommu(tables_blob, tables->linker);
         } else if (IOMMUType == TYPE_INTEL) {
-            acpi_add_table(table_offsets, tables_blob);
+            acpi_add_table(table_offsets_rsdt, tables_blob);
+            acpi_add_table(table_offsets_xsdt, tables_blob);
             build_dmar_q35(tables_blob, tables->linker);
         }
     }
     if (pcms->acpi_nvdimm_state.is_enabled) {
-        nvdimm_build_acpi(table_offsets, tables_blob, tables->linker,
+        // FIXME
+        nvdimm_build_acpi(table_offsets_rsdt, tables_blob, tables->linker,
                           &pcms->acpi_nvdimm_state, machine->ram_slots);
     }
 
@@ -2725,17 +2760,21 @@ void acpi_build(AcpiBuildTables *tables, MachineState *machine)
     for (u = acpi_table_first(); u; u = acpi_table_next(u)) {
         unsigned len = acpi_table_len(u);
 
-        acpi_add_table(table_offsets, tables_blob);
+        acpi_add_table(table_offsets_rsdt, tables_blob);
+        acpi_add_table(table_offsets_xsdt, tables_blob);
         g_array_append_vals(tables_blob, u, len);
     }
 
-    /* RSDT is pointed to by RSDP */
+    /* RSDT and XSDT are pointed to by RSDP */
     rsdt = tables_blob->len;
-    build_rsdt(tables_blob, tables->linker, table_offsets,
+    build_rsdt(tables_blob, tables->linker, table_offsets_rsdt,
+               slic_oem.id, slic_oem.table_id);
+    xsdt = tables_blob->len;
+    build_xsdt(tables_blob, tables->linker, table_offsets_xsdt,
                slic_oem.id, slic_oem.table_id);
 
     /* RSDP is in FSEG memory, so allocate it separately */
-    build_rsdp(tables->rsdp, tables->linker, rsdt);
+    build_rsdp(tables->rsdp, tables->linker, rsdt, xsdt);
 
     /* We'll expose it all to Guest so we want to reduce
      * chance of size changes.
@@ -2784,7 +2823,8 @@ void acpi_build(AcpiBuildTables *tables, MachineState *machine)
     acpi_align_size(tables->linker->cmd_blob, ACPI_BUILD_ALIGN_SIZE);
 
     /* Cleanup memory that's no longer used. */
-    g_array_free(table_offsets, true);
+    g_array_free(table_offsets_rsdt, true);
+    g_array_free(table_offsets_xsdt, true);
 }
 
 static void acpi_ram_update(MemoryRegion *mr, GArray *data)
