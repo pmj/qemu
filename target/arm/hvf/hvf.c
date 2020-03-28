@@ -1723,6 +1723,10 @@ static void hvf_wait_for_ipi(CPUState *cpu, struct timespec *ts)
     qemu_mutex_lock_iothread();
 }
 
+void hvf_arch_handle_ipi(int sig)
+{
+}
+
 static void hvf_wfi(CPUState *cpu)
 {
     ARMCPU *arm_cpu = ARM_CPU(cpu);

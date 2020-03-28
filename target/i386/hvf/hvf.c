@@ -181,6 +181,29 @@ static void init_tsc_freq(CPUX86State *env)
     env->tsc_khz = tsc_freq / 1000;  /* Hz to KHz */
 }
 
+void hvf_arch_handle_ipi(int sig)
+{
+    if (!current_cpu) {
+        return;
+    }
+
+    /*
+     * skip object type check to avoid a deadlock in
+     * qemu_log/vfprintf/flockfile.
+     */
+    X86CPU *x86_cpu = (X86CPU *)current_cpu;
+    CPUX86State *env = &x86_cpu->env;
+
+    qatomic_set(&current_cpu->exit_request, true);
+    /* Write cpu->exit_request before reading env->hvf_in_guest */
+    smp_mb();
+    if (qatomic_read(&env->hvf_in_guest)) {
+        wvmcs(current_cpu->accel->fd, VMCS_PIN_BASED_CTLS,
+              rvmcs(current_cpu->accel->fd, VMCS_PIN_BASED_CTLS)
+                | VMCS_PIN_BASED_CTLS_VMX_PREEMPT_TIMER);
+    }
+}
+
 static void init_apic_bus_freq(CPUX86State *env)
 {
     size_t length;
@@ -209,7 +232,27 @@ static inline bool apic_bus_freq_is_known(CPUX86State *env)
 
 void hvf_kick_vcpu_thread(CPUState *cpu)
 {
-    cpus_kick_thread(cpu);
+    hv_return_t hv_err;
+    int err;
+    hv_vcpuid_t vcpuid;
+    
+    if (qatomic_read(&cpu->thread_kicked)) {
+        return;
+    }
+    qatomic_set_mb(&cpu->thread_kicked, true);
+
+    err = pthread_kill(cpu->thread->thread, SIG_IPI);
+    if (err) {
+        fprintf(stderr, "qemu:%s: %s\n", __func__, strerror(err));
+        exit(1);
+    }
+    vcpuid = cpu->accel->fd;
+    hv_err = hv_vcpu_interrupt(&vcpuid, 1);
+    if (hv_err) {
+        fprintf(stderr, "qemu:%s error %#x\n", __func__, err);
+        exit(1);
+    }
+
 }
 
 int hvf_arch_init(void)
@@ -227,6 +270,7 @@ int hvf_arch_init_vcpu(CPUState *cpu)
     init_decoder();
 
     hvf_state->hvf_caps = g_new0(struct hvf_vcpu_caps, 1);
+    env->hvf_in_guest = false;
     env->hvf_mmio_buf = g_new(char, 4096);
 
     if (x86cpu->vmware_cpuid_freq) {
@@ -284,6 +328,7 @@ int hvf_arch_init_vcpu(CPUState *cpu)
     wvmcs(cpu->accel->fd, VMCS_EXCEPTION_BITMAP, 0); /* Double fault */
 
     wvmcs(cpu->accel->fd, VMCS_TPR_THRESHOLD, 0);
+    wvmcs(cpu->accel->fd, VMCS_PREEMPTION_TIMER_VALUE, 0);
 
     x86cpu = X86_CPU(cpu);
     x86cpu->env.xsave_buf_len = 4096;
@@ -435,7 +480,20 @@ int hvf_vcpu_exec(CPUState *cpu)
             return EXCP_HLT;
         }
 
+        qatomic_set(&env->hvf_in_guest, true);
+        /* Read cpu->exit_request after writing env->hvf_in_guest */
+        smp_mb();
+        if (qatomic_read(&cpu->exit_request)) {
+            qatomic_set(&env->hvf_in_guest, false);
+            qemu_mutex_lock_iothread();
+            wvmcs(cpu->accel->fd, VMCS_PIN_BASED_CTLS,
+                  rvmcs(cpu->accel->fd, VMCS_PIN_BASED_CTLS)
+                    & ~VMCS_PIN_BASED_CTLS_VMX_PREEMPT_TIMER);
+            qatomic_set(&cpu->exit_request, false);
+            return EXCP_INTERRUPT;
+        }
         hv_return_t r  = hv_vcpu_run(cpu->accel->fd);
+        qatomic_store_release(&env->hvf_in_guest, false);
         assert_hvf_ok(r);
 
         /* handle VMEXIT */
@@ -582,7 +640,12 @@ int hvf_vcpu_exec(CPUState *cpu)
             vmx_clear_nmi_window_exiting(cpu);
             ret = EXCP_INTERRUPT;
             break;
+        case EXIT_REASON_VMX_PREEMPT:
         case EXIT_REASON_EXT_INTR:
+            wvmcs(cpu->accel->fd, VMCS_PIN_BASED_CTLS,
+                  rvmcs(cpu->accel->fd, VMCS_PIN_BASED_CTLS)
+                    & ~VMCS_PIN_BASED_CTLS_VMX_PREEMPT_TIMER);
+            qatomic_set(&cpu->exit_request, false);
             /* force exit and allow io handling */
             ret = EXCP_INTERRUPT;
             break;

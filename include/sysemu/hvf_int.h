@@ -66,5 +66,6 @@ hvf_slot *hvf_find_overlap_slot(uint64_t, uint64_t);
 int hvf_put_registers(CPUState *);
 int hvf_get_registers(CPUState *);
 void hvf_kick_vcpu_thread(CPUState *cpu);
+void hvf_arch_handle_ipi(int sig);
 
 #endif

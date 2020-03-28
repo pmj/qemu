@@ -1862,6 +1862,7 @@ typedef struct CPUArchState {
     QemuMutex xen_timers_lock;
 #endif
 #if defined(CONFIG_HVF)
+    bool hvf_in_guest;
     HVFX86LazyFlags hvf_lflags;
     void *hvf_mmio_buf;
 #endif

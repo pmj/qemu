@@ -312,10 +312,6 @@ static MemoryListener hvf_memory_listener = {
     .log_sync = hvf_log_sync,
 };
 
-static void dummy_signal(int sig)
-{
-}
-
 bool hvf_allowed;
 
 static int hvf_accel_init(MachineState *ms)
@@ -390,11 +386,12 @@ static int hvf_init_vcpu(CPUState *cpu)
     struct sigaction sigact;
 
     memset(&sigact, 0, sizeof(sigact));
-    sigact.sa_handler = dummy_signal;
+    sigact.sa_handler = hvf_arch_handle_ipi;
     sigaction(SIG_IPI, &sigact, NULL);
 
     pthread_sigmask(SIG_BLOCK, NULL, &cpu->accel->unblock_ipi_mask);
     sigdelset(&cpu->accel->unblock_ipi_mask, SIG_IPI);
+    pthread_sigmask(SIG_SETMASK, &cpu->accel->unblock_ipi_mask, NULL);
 
 #ifdef __aarch64__
     r = hv_vcpu_create(&cpu->accel->fd,
