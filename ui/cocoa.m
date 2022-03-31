@@ -89,12 +89,18 @@ static void cocoa_switch(DisplayChangeListener *dcl,
 
 static void cocoa_refresh(DisplayChangeListener *dcl);
 
+static void cocoa_cursor_define(DisplayChangeListener *dcl, QEMUCursor *cursor);
+
+static void cocoa_mouse_set(DisplayChangeListener *dcl, int x, int y, int on);
+
 static NSWindow *normalWindow;
 static const DisplayChangeListenerOps dcl_ops = {
     .dpy_name          = "cocoa",
     .dpy_gfx_update = cocoa_update,
     .dpy_gfx_switch = cocoa_switch,
     .dpy_refresh = cocoa_refresh,
+    .dpy_cursor_define = cocoa_cursor_define,
+    .dpy_mouse_set = cocoa_mouse_set,
 };
 static DisplayChangeListener dcl = {
     .ops = &dcl_ops,
@@ -313,6 +319,7 @@ static void handleAnyDeviceErrors(Error * err)
     BOOL isFullscreen;
     BOOL isAbsoluteEnabled;
     CFMachPortRef eventsTap;
+    NSCursor *current_cursor;
 }
 - (void) switchSurface:(pixman_image_t *)image;
 - (void) grabMouse;
@@ -337,6 +344,9 @@ static void handleAnyDeviceErrors(Error * err)
 - (float) cdy;
 - (QEMUScreen) gscreen;
 - (void) raiseAllKeys;
+- (void) setCursor:(NSCursor*)newCursor;
+- (void) setMouseX:(int)x y:(int)y showCursor:(BOOL)showCursor;
+
 @end
 
 QemuCocoaView *cocoaView;
@@ -377,6 +387,9 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
     if (pixman_image) {
         pixman_image_unref(pixman_image);
     }
+    
+    [self->current_cursor release];
+    self->current_cursor = nil;
 
     qkbd_state_free(kbd);
 
@@ -430,6 +443,39 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
     } else {
         return [[self window] convertRectFromScreen:[eventWindow convertRectToScreen:r]].origin;
     }
+}
+
+- (void) setCursor:(NSCursor*)newCursor
+{
+    [self->current_cursor release];
+    [newCursor retain];
+    self->current_cursor = newCursor;
+    [self.window invalidateCursorRectsForView:self];
+}
+
+- (void) resetCursorRects
+{
+    if (self->current_cursor == nil)
+    {
+        [super resetCursorRects];
+    }
+    else
+    {
+        [self addCursorRect:NSMakeRect(0.0, 0.0, self->screen.width, self->screen.height) cursor:self->current_cursor];
+    }
+}
+
+- (void) setMouseX:(int)x y:(int)y showCursor:(BOOL)showCursor
+{
+    if (isAbsoluteEnabled)
+        return; // TODO: do we need to do anything about showCursor?
+    
+    // TODO: Test this with non-absolute pointing device
+    NSWindow* window = [self window];
+    NSPoint window_mouse_pos = [self convertPoint:NSMakePoint(x, y) toView:nil];
+    CGPoint global_host_mouse_pos = [window convertPointToScreen:window_mouse_pos];
+    printf("setMouseX: %d y: %d showCursor: %s; global mouse position: %f, %f\n", x, y, showCursor ? "yes" : "no", global_host_mouse_pos.x, global_host_mouse_pos.y);
+    CGWarpMouseCursorPosition(global_host_mouse_pos);
 }
 
 - (void) hideCursor
@@ -1143,7 +1189,10 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
         else
             [normalWindow setTitle:@"QEMU - (Press  " UC_CTRL_KEY " " UC_ALT_KEY " G  to release Mouse)"];
     }
-    [self hideCursor];
+    if (!isAbsoluteEnabled || current_cursor == nil)
+    {
+        [self hideCursor];
+    }
     CGAssociateMouseAndMouseCursorPosition(isAbsoluteEnabled);
     isMouseGrabbed = TRUE; // while isMouseGrabbed = TRUE, QemuCocoaApp sends all events to [cocoaView handleEvent:]
 }
@@ -1158,7 +1207,12 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
         else
             [normalWindow setTitle:@"QEMU"];
     }
-    [self unhideCursor];
+    
+    if (!isAbsoluteEnabled || current_cursor == nil)
+    {
+        [self unhideCursor];
+    }
+    
     CGAssociateMouseAndMouseCursorPosition(TRUE);
     isMouseGrabbed = FALSE;
 }
@@ -2025,6 +2079,67 @@ static void cocoa_refresh(DisplayChangeListener *dcl)
     }
 
     [pool release];
+}
+
+static NSImage *cocoa_create_image_with_32b_argb_pixels(size_t width, size_t height, const void* pixel_data)
+{
+    size_t buffer_size = width * height * 4lu;
+    CGDataProviderRef provider = CGDataProviderCreateWithData(
+        NULL, pixel_data, buffer_size, NULL);
+    size_t bpc = 8;
+    size_t bpp = 32;
+    size_t bytes_per_row = 4u * width;
+    CGColorSpaceRef color_space = CGColorSpaceCreateDeviceRGB();
+    CGBitmapInfo bitmap_info =
+        kCGBitmapByteOrder32Little | kCGImageAlphaFirst;
+    CGColorRenderingIntent intent = kCGRenderingIntentDefault;
+
+    CGImageRef cg_image = CGImageCreate(
+        width,
+        height,
+        bpc,
+        bpp,
+        bytes_per_row,
+        color_space,
+        bitmap_info,
+        provider,
+        NULL,       // decode
+        YES,        // should interpolate
+        intent);
+
+    NSImage *image = [[NSImage alloc] initWithCGImage:cg_image size:NSMakeSize(width, height)];
+    CGImageRelease(cg_image);
+    CGColorSpaceRelease(color_space);
+    CGDataProviderRelease(provider);
+    return image;
+}
+
+static void cocoa_cursor_define(DisplayChangeListener *dcl, QEMUCursor *cursor)
+{
+    NSImage *cursor_image = nil;
+    NSPoint hotspot = { cursor->hot_x, cursor->hot_y };
+    if (cursor == NULL || cursor->width <= 0 || cursor->height <= 0)
+    {
+        cursor_image = [[NSImage alloc] initWithSize:NSMakeSize(1.0, 1.0)];
+        printf("cocoa_cursor_define: using empty cursor image %p\n", cursor_image);
+    }
+    else
+    {
+        cursor_image = cocoa_create_image_with_32b_argb_pixels(
+            cursor->width, cursor->height, cursor->data);
+        printf("cocoa_cursor_define: cursor_image = %p\n", cursor_image);
+    }
+    NSCursor *cocoa_cursor = [[NSCursor alloc] initWithImage:cursor_image hotSpot:hotspot];
+    [cursor_image release];
+    [cocoaView setCursor:cocoa_cursor];
+    [cocoa_cursor release];
+}
+
+static void cocoa_mouse_set(DisplayChangeListener *dcl, int x, int y, int on)
+{
+    // TODO: Do we need to handle this?
+    //printf("cocoa_mouse_set: %d, %d; on: %s\n", x, y, on ? "yes" : "no");
+    [cocoaView setMouseX:x y:y showCursor:(on != 0)];
 }
 
 static void cocoa_display_init(DisplayState *ds, DisplayOptions *opts)
