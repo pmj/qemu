@@ -1,6 +1,9 @@
 config VMAPPLE_AES
     bool
 
+config VMAPPLE_BDIF
+    bool
+
 config VMAPPLE_PVG
     bool
 
