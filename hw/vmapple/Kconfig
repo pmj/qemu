@@ -10,3 +10,5 @@ config VMAPPLE_CFG
 config VMAPPLE_PVG
     bool
 
+config VMAPPLE_VIRTIO_BLK
+    bool
