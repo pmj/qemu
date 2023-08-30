@@ -1,1 +1,4 @@
 
+config VMAPPLE_PVG
+    bool
+
