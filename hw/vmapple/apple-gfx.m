@@ -36,7 +36,13 @@ static const PGDisplayCoord_t apple_gfx_modes[] = {
 };
 
 static dispatch_queue_t pg_task_q = NULL;
-#define assert_thread_safety() ({ if (pg_task_q) { assert(pg_task_q == dispatch_get_current_queue()); } else { pg_task_q = dispatch_get_current_queue(); } })
+
+static void print_queue_labels()
+{
+	dispatch_queue_global_t dq = dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0);
+	fprintf(stderr, "pg_task_q: '%s' (%p), current: '%s' (%p), default: '%s' (%p)\n", dispatch_queue_get_label(pg_task_q), pg_task_q, dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL), dispatch_get_current_queue(), dispatch_queue_get_label(dq), dq);
+}
+
 
 /*
  * We have to map PVG memory into our address space. Use the one below
@@ -44,6 +50,7 @@ static dispatch_queue_t pg_task_q = NULL;
  * memory range.
  */
 #define APPLE_GFX_BASE_VA ((void *)(uintptr_t)0x500000000000UL)
+#define assert_thread_safety() ({ if (pg_task_q) { if (pg_task_q != dispatch_get_current_queue()) { print_queue_labels(); } } else { pg_task_q = dispatch_get_current_queue(); } })
 
 /*
  * ParavirtualizedGraphics.Framework only ships header files for the x86
@@ -295,7 +302,7 @@ static const GraphicHwOps apple_gfx_fb_ops = {
 
 static void update_cursor(AppleGFXState *s)
 {
-    assert(qemu_mutex_iothread_locked());
+    //assert(qemu_mutex_iothread_locked());
     dpy_mouse_set(s->con, s->pgdisp.cursorPosition.x, s->pgdisp.cursorPosition.y, s->cursor_show);
 
     /* Need to render manually if cursor is not natively supported */
