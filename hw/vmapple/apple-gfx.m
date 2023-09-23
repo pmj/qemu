@@ -35,6 +35,9 @@ static const PGDisplayCoord_t apple_gfx_modes[] = {
     { .x = 1280, .y = 1024 },
 };
 
+static dispatch_queue_t pg_task_q = NULL;
+#define assert_thread_safety() ({ if (pg_task_q) { assert(pg_task_q == dispatch_get_current_queue()); } else { pg_task_q = dispatch_get_current_queue(); } })
+
 /*
  * We have to map PVG memory into our address space. Use the one below
  * as base start address. In normal linker setups it points to a free
@@ -115,6 +118,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(AppleGFXState, APPLE_GFX)
 
 static AppleGFXTask *apple_gfx_new_task(AppleGFXState *s, uint64_t len)
 {
+    assert_thread_safety();
     void *base = APPLE_GFX_BASE_VA;
     AppleGFXTask *task;
 
@@ -136,6 +140,7 @@ static AppleGFXTask *apple_gfx_new_task(AppleGFXState *s, uint64_t len)
 static AppleGFXMR *apple_gfx_mapMemory(AppleGFXState *s, AppleGFXTask *task,
                                        uint64_t voff, uint64_t phys, uint64_t len)
 {
+    assert_thread_safety();
     AppleGFXMR *mr = g_new0(AppleGFXMR, 1);
 
     mr->pa = phys;
@@ -226,6 +231,7 @@ static const MemoryRegionOps apple_iosfc_ops = {
 
 static void apple_gfx_fb_update_display(void *opaque)
 {
+    assert(qemu_mutex_iothread_locked());
     AppleGFXState *s = opaque;
 
     if (!s->new_frame || !s->handles_frames) {
@@ -289,6 +295,7 @@ static const GraphicHwOps apple_gfx_fb_ops = {
 
 static void update_cursor(AppleGFXState *s)
 {
+    assert(qemu_mutex_iothread_locked());
     dpy_mouse_set(s->con, s->pgdisp.cursorPosition.x, s->pgdisp.cursorPosition.y, s->cursor_show);
 
     /* Need to render manually if cursor is not natively supported */
@@ -299,6 +306,7 @@ static void update_cursor(AppleGFXState *s)
 
 static void set_mode(AppleGFXState *s, uint32_t width, uint32_t height)
 {
+    assert(qemu_mutex_iothread_locked());
     void *vram = g_malloc0(width * height * 4);
     void *old_vram = s->vram;
     DisplaySurface *surface;
@@ -382,6 +390,7 @@ static void apple_gfx_realize(DeviceState *dev, Error **errp)
     };
 
     desc.destroyTask = ^(PGTask_t * _Nonnull _task) {
+				assert_thread_safety();
         AppleGFXTask *task = (AppleGFXTask *)_task;
         trace_apple_gfx_destroy_task(task);
         QTAILQ_REMOVE(&s->tasks, task, node);
@@ -424,6 +433,7 @@ static void apple_gfx_realize(DeviceState *dev, Error **errp)
     };
 
     desc.unmapMemory = ^(PGTask_t * _Nonnull _task, uint64_t virtualOffset, uint64_t length) {
+			assert_thread_safety();
         AppleGFXTask *task = (AppleGFXTask *)_task;
         AppleGFXMR *mr, *next;
 
@@ -511,6 +521,7 @@ static void apple_gfx_realize(DeviceState *dev, Error **errp)
         s->cursor_show = show;
         update_cursor(s);
     };
+    
     disp_desc.cursorMoveHandler = ^(void) {
         trace_apple_gfx_cursor_move();
         update_cursor(s);
