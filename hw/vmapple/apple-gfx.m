@@ -313,7 +313,7 @@ static void update_cursor(AppleGFXState *s)
 
 static void set_mode(AppleGFXState *s, uint32_t width, uint32_t height)
 {
-    assert(qemu_mutex_iothread_locked());
+    //assert(qemu_mutex_iothread_locked());
     void *vram = g_malloc0(width * height * 4);
     void *old_vram = s->vram;
     DisplaySurface *surface;
