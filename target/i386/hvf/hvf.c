@@ -68,11 +68,16 @@
 #include <Hypervisor/hv.h>
 #include <Hypervisor/hv_vmx.h>
 #include <sys/sysctl.h>
+#include <os/log.h>
+#include <os/signpost.h>
 
 #include "hw/i386/apic_internal.h"
 #include "qemu/main-loop.h"
 #include "qemu/accel.h"
 #include "target/i386/cpu.h"
+
+static os_log_t hvf_vcpu_log;
+static os_signpost_id_t hvf_vcpu_spid = OS_SIGNPOST_ID_EXCLUSIVE;
 
 void vmx_update_tpr(CPUState *cpu)
 {
@@ -184,6 +189,10 @@ static void init_tsc_freq(CPUX86State *env)
 void hvf_arch_handle_ipi(int sig)
 {
     if (!current_cpu) {
+        if (!os_signpost_enabled(hvf_vcpu_log))  {
+            fprintf(stderr, "hvf_arch_handle_ipi: no CPU\n");
+        }
+        os_signpost_event_emit(hvf_vcpu_log, hvf_vcpu_spid, "hvf_arch_handle_ipi no CPU");
         return;
     }
 
@@ -198,9 +207,12 @@ void hvf_arch_handle_ipi(int sig)
     /* Write cpu->exit_request before reading env->hvf_in_guest */
     smp_mb();
     if (qatomic_read(&env->hvf_in_guest)) {
+        os_signpost_event_emit(hvf_vcpu_log, hvf_vcpu_spid, "hvf_arch_handle_ipi hvf_in_guest", "cpu %u", current_cpu->cpu_index);
         wvmcs(current_cpu->accel->fd, VMCS_PIN_BASED_CTLS,
               rvmcs(current_cpu->accel->fd, VMCS_PIN_BASED_CTLS)
                 | VMCS_PIN_BASED_CTLS_VMX_PREEMPT_TIMER);
+    } else {
+        os_signpost_event_emit(hvf_vcpu_log, hvf_vcpu_spid, "hvf_arch_handle_ipi !hvf_in_guest", "cpu %u", current_cpu->cpu_index);
     }
 }
 
@@ -237,11 +249,16 @@ void hvf_kick_vcpu_thread(CPUState *cpu)
     hv_vcpuid_t vcpuid;
     
     if (qatomic_read(&cpu->thread_kicked)) {
+        os_signpost_event_emit(hvf_vcpu_log, hvf_vcpu_spid, "hvf_kick_vcpu_thread already kicked", "cpu %u", cpu->cpu_index);
         return;
     }
     qatomic_set_mb(&cpu->thread_kicked, true);
 
     err = pthread_kill(cpu->thread->thread, SIG_IPI);
+    os_signpost_event_emit(hvf_vcpu_log, hvf_vcpu_spid, "hvf_kick_vcpu_thread sent signal", "cpu %u", cpu->cpu_index);
+    if (!os_signpost_enabled(hvf_vcpu_log))  {
+        fprintf(stderr, "hvf_kick_vcpu_thread sent signal\n");
+    }
     if (err) {
         fprintf(stderr, "qemu:%s: %s\n", __func__, strerror(err));
         exit(1);
@@ -257,6 +274,8 @@ void hvf_kick_vcpu_thread(CPUState *cpu)
 
 int hvf_arch_init(void)
 {
+    hvf_vcpu_log = os_log_create("org.qemu.hvf.i386.vcpu", OS_LOG_CATEGORY_DYNAMIC_STACK_TRACING);
+    fprintf(stderr, "log: %p\n", hvf_vcpu_log);
     return 0;
 }
 
@@ -352,6 +371,9 @@ int hvf_arch_init_vcpu(CPUState *cpu)
     hv_vcpu_enable_native_msr(cpu->accel->fd, MSR_IA32_SYSENTER_CS, 1);
     hv_vcpu_enable_native_msr(cpu->accel->fd, MSR_IA32_SYSENTER_EIP, 1);
     hv_vcpu_enable_native_msr(cpu->accel->fd, MSR_IA32_SYSENTER_ESP, 1);
+
+    //hvf_vcpu_spid = os_signpost_id_generate(hvf_vcpu_log);
+    fprintf(stderr, "hvf_vcpu_spid: 0x%llx\n", hvf_vcpu_spid);
 
     return 0;
 }
