@@ -248,17 +248,13 @@ void hvf_kick_vcpu_thread(CPUState *cpu)
     int err;
     hv_vcpuid_t vcpuid;
     
-    if (qatomic_read(&cpu->thread_kicked)) {
+    if (qatomic_fetch_or(&cpu->thread_kicked, true)) {
         os_signpost_event_emit(hvf_vcpu_log, hvf_vcpu_spid, "hvf_kick_vcpu_thread already kicked", "cpu %u", cpu->cpu_index);
         return;
     }
-    qatomic_set_mb(&cpu->thread_kicked, true);
 
+    os_signpost_event_emit(hvf_vcpu_log, hvf_vcpu_spid, "hvf_kick_vcpu_thread sending signal/interrupt", "cpu %u", cpu->cpu_index);
     err = pthread_kill(cpu->thread->thread, SIG_IPI);
-    os_signpost_event_emit(hvf_vcpu_log, hvf_vcpu_spid, "hvf_kick_vcpu_thread sent signal", "cpu %u", cpu->cpu_index);
-    if (!os_signpost_enabled(hvf_vcpu_log))  {
-        fprintf(stderr, "hvf_kick_vcpu_thread sent signal\n");
-    }
     if (err) {
         fprintf(stderr, "qemu:%s: %s\n", __func__, strerror(err));
         exit(1);
@@ -274,7 +270,7 @@ void hvf_kick_vcpu_thread(CPUState *cpu)
 
 int hvf_arch_init(void)
 {
-    hvf_vcpu_log = os_log_create("org.qemu.hvf.i386.vcpu", OS_LOG_CATEGORY_DYNAMIC_STACK_TRACING);
+    hvf_vcpu_log = os_log_create("org.qemu.hvf.i386.vcpu", OS_LOG_CATEGORY_DYNAMIC_TRACING /*OS_LOG_CATEGORY_DYNAMIC_STACK_TRACING*/);
     fprintf(stderr, "log: %p\n", hvf_vcpu_log);
     return 0;
 }
@@ -533,9 +529,10 @@ int hvf_vcpu_exec(CPUState *cpu)
                   rvmcs(cpu->accel->fd, VMCS_PIN_BASED_CTLS)
                     & ~VMCS_PIN_BASED_CTLS_VMX_PREEMPT_TIMER);
             qatomic_set(&cpu->exit_request, false);
+            os_signpost_event_emit(hvf_vcpu_log, hvf_vcpu_spid, "hvf_vcpu_exec exit request pre-vcpu_run", "cpu %u", current_cpu->cpu_index);
             return EXCP_INTERRUPT;
         }
-        hv_return_t r  = hvf_vcpu_run(cpu->accel->fd);
+        hv_return_t r = hvf_vcpu_run(cpu->accel->fd);
         qatomic_store_release(&env->hvf_in_guest, false);
         assert_hvf_ok(r);
 
@@ -685,10 +682,14 @@ int hvf_vcpu_exec(CPUState *cpu)
             break;
         case EXIT_REASON_VMX_PREEMPT:
         case EXIT_REASON_EXT_INTR:
-            wvmcs(cpu->accel->fd, VMCS_PIN_BASED_CTLS,
-                  rvmcs(cpu->accel->fd, VMCS_PIN_BASED_CTLS)
-                    & ~VMCS_PIN_BASED_CTLS_VMX_PREEMPT_TIMER);
-            qatomic_set(&cpu->exit_request, false);
+            if (qatomic_fetch_and(&cpu->exit_request, false)) {
+                wvmcs(cpu->accel->fd, VMCS_PIN_BASED_CTLS,
+                      rvmcs(cpu->accel->fd, VMCS_PIN_BASED_CTLS)
+                        & ~VMCS_PIN_BASED_CTLS_VMX_PREEMPT_TIMER);
+                os_signpost_event_emit(hvf_vcpu_log, hvf_vcpu_spid, "hvf_vcpu_exec exit request on exit", "cpu %u, reason %llu", current_cpu->cpu_index, exit_reason);
+            } else {
+                os_signpost_event_emit(hvf_vcpu_log, hvf_vcpu_spid, "hvf_vcpu_exec other ext interrupt exit", "cpu %u, reason %llu", current_cpu->cpu_index, exit_reason);
+            }
             /* force exit and allow io handling */
             ret = EXCP_INTERRUPT;
             break;
