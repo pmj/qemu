@@ -20,10 +20,25 @@
 #include "cpu.h"
 
 #ifdef CONFIG_HVF
+
 extern bool hvf_allowed;
 #define hvf_enabled() (hvf_allowed)
+
+// macOS 12 SDK and newer provide APIs for in-kernel vAPIC, runtime check needed
+#if defined(MAC_OS_VERSION_12_0) && defined(__x86_64__)
+#define HVF_APIC_ACCEL_AVAILABLE 1
+extern bool hvf_kernel_irqchip_allowed(void);
+extern bool hvf_irqchip_in_kernel(void);
+#else
+#define HVF_APIC_ACCEL_AVAILABLE 0
+#define hvf_kernel_irqchip_allowed() 0
+#define hvf_irqchip_in_kernel() 0
+#endif
+
 #else /* !CONFIG_HVF */
 #define hvf_enabled() 0
+#define hvf_kernel_irqchip_allowed() 0
+#define hvf_irqchip_in_kernel() 0
 #endif /* !CONFIG_HVF */
 
 #endif /* NEED_CPU_H */

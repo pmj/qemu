@@ -2041,6 +2041,11 @@ int hvf_arch_init(void)
     return 0;
 }
 
+hv_return_t hvf_arch_vm_create(void)
+{
+    return hv_vm_create(NULL);
+}
+
 static const uint32_t brk_insn = 0xd4200000;
 
 int hvf_arch_insert_sw_breakpoint(CPUState *cpu, struct hvf_sw_breakpoint *bp)

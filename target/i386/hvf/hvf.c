@@ -219,6 +219,39 @@ int hvf_arch_init(void)
     return 0;
 }
 
+#if HVF_APIC_ACCEL_AVAILABLE
+
+static bool kernel_apic_enabled;
+
+bool hvf_kernel_irqchip_allowed(void)
+{
+    if (!hvf_enabled()) {
+        return false;
+    }
+    if (__builtin_available(macOS 12.0, *)) {
+        return true;
+    }
+    return false;
+}
+
+bool hvf_irqchip_in_kernel(void)
+{
+    return kernel_apic_enabled;
+}
+#endif
+
+hv_return_t hvf_arch_vm_create(void)
+{
+    hv_vm_options_t options = HV_VM_DEFAULT;
+#if HVF_APIC_ACCEL_AVAILABLE
+    if (hvf_kernel_irqchip_allowed()) {
+        options |= HV_VM_ACCEL_APIC;
+        kernel_apic_enabled = true;
+    }
+#endif
+    return hv_vm_create(options);
+}
+
 int hvf_arch_init_vcpu(CPUState *cpu)
 {
     X86CPU *x86cpu = X86_CPU(cpu);
