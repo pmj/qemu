@@ -72,4 +72,9 @@ int hvf_put_registers(CPUState *);
 int hvf_get_registers(CPUState *);
 void hvf_kick_vcpu_thread(CPUState *cpu);
 
+#if defined(MAC_OS_VERSION_12_0) && defined(__x86_64__)
+struct APICCommonState;
+extern void hvf_apic_follow_up_exit_info(struct APICCommonState *s, hv_vm_exitinfo_t exit_info);
+#endif
+
 #endif
