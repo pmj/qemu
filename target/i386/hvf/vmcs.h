@@ -364,6 +364,7 @@
 #define VMCS_PRI_PROC_BASED2_CTLS_APIC_ACCESSES (1 << 0)
 #define VMCS_PRI_PROC_BASED2_CTLS_RDTSCP        (1 << 3)
 #define VMCS_PRI_PROC_BASED2_CTLS_X2APIC        (1 << 4)
+#define VMCS_PRI_PROC_BASED2_APIC_REG_VIRT      (1 << 8)
 
 enum task_switch_reason {
     TSR_CALL,

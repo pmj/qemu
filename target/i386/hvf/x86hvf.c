@@ -404,6 +404,11 @@ bool hvf_inject_interrupts(CPUState *cs)
             vmx_set_nmi_window_exiting(cs);
         }
     }
+    
+    if (hvf_irqchip_in_kernel() && (cs->interrupt_request & CPU_INTERRUPT_SIPI)) {
+        fprintf(stderr, "hvf_inject_interrupts[%u]: SIPI requested\n",
+            cs->cpu_index);
+    }
 
     if (!(env->hflags & HF_INHIBIT_IRQ_MASK) &&
         (cs->interrupt_request & CPU_INTERRUPT_HARD) &&

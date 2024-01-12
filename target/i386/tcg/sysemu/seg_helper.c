@@ -147,6 +147,7 @@ bool x86_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
         apic_poll_irq(cpu->apic_state);
         break;
     case CPU_INTERRUPT_SIPI:
+        fprintf(stderr, "x86_cpu_exec_interrupt[%u]: SIPI\n", cs->cpu_index);
         do_cpu_sipi(cpu);
         break;
     case CPU_INTERRUPT_SMI:

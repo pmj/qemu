@@ -10,9 +10,17 @@
 #include "sysemu/hvf.h"
 #include "sysemu/hvf_int.h"
 #include "sysemu/cpus.h"
+#include <Hypervisor/hv_vmx.h>
 
 #pragma mark DEBUG
 #include <os/log.h>
+//extern os_log_t hvf_log;
+/*
+#define LP "" //"{public}"
+#define log(fmt, ...) fprintf(stderr, fmt, ## __VA_ARGS__ ) //os_log(OS_LOG_DEFAULT, fmt, ## __VA_ARGS__)
+ */
+#define LP "{public}"
+#define log(fmt, ...) os_log(OS_LOG_DEFAULT, fmt, ## __VA_ARGS__)
 #pragma mark -
 
 // TODO: Move to general APIC header or use those defined in x2APIC patch series
@@ -23,7 +31,6 @@
 #define TYPE_HVF_APIC "hvf-apic"
 OBJECT_DECLARE_SIMPLE_TYPE(APICCommonState, HVF_APIC)
 
-#define log(fmt, ...) os_log(OS_LOG_DEFAULT, fmt, ## __VA_ARGS__)
 
 #pragma mark DEBUG
 static const char* apic_dest_mode_str(uint8_t mode)
@@ -68,6 +75,40 @@ static const char* hvf_exit_info_string(hv_vm_exitinfo_t exit_info)
     default:                              return "?unknown hv_vm_exitinfo_t?";
     };
 }
+
+static void hvf_dump_kernel_apic_state(APICCommonState *apic)
+{
+    //return;
+    //*
+    hv_apic_state_ext_t apic_state = { .version = HV_APIC_STATE_EXT_VER, };
+    CPUState *cs = &apic->cpu->parent_obj;
+    
+    hv_return_t result = hv_vcpu_apic_get_state(cs->accel->fd, &apic_state);
+    log("hvf_dump_kernel_apic_state[%u] -> %s\n", cs->accel->fd, hvf_return_string(result));
+    if (result != HV_SUCCESS) {
+        return;
+    }
+    
+    struct hv_apic_state *s = &apic_state.state;
+    
+    log("{ .gpa =    0x%012" PRIx64 ", .controls = 0x%012" PRIx64 ", .tsc_deadline = 0x%012" PRIx64 ", apic_id = 0x%08" PRIx32 ",\n", s->apic_gpa, s->apic_controls, s->tsc_deadline, s->apic_id);
+    log("  .ver =        0x%08" PRIx32 ", .tpr =          0x%08" PRIx32 ", .apr =              0x%08" PRIx32 ", ldr =     0x%08" PRIx32 ",\n", s->ver, s->tpr, s->apr, s->ldr);
+    log("  .dfr =        0x%08" PRIx32 ", .svr =          0x%08" PRIx32 ", .esr =              0x%08" PRIx32 ",\n", s->dfr, s->svr, s->esr);
+    log("  .icr =      [ 0x%08" PRIx32 ",   0x%08" PRIx32 " ],          .icr_timer =        0x%08" PRIx32 ", dcr_timer =  0x%08" PRIx32 ",\n", s->icr[0], s->icr[1], s->icr_timer, s->dcr_timer);
+    log("  .ccr_timer =  0x%08" PRIx32 ", .esr_pending =  0x%08" PRIx32 ", .boot_state =   0x%08" PRIx32 ",\n", s->ccr_timer, s->esr_pending, s->boot_state);
+    log("  .isr =    [   0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 "],\n",
+        s->isr[0], s->isr[1], s->isr[2], s->isr[3], s->isr[4], s->isr[5], s->isr[6], s->isr[7]);
+    log("  .tmr =    [   0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 "],\n",
+        s->tmr[0], s->tmr[1], s->tmr[2], s->tmr[3], s->tmr[4], s->tmr[5], s->tmr[6], s->tmr[7]);
+    log("  .irr =    [   0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 "],\n",
+        s->irr[0], s->irr[1], s->irr[2], s->irr[3], s->irr[4], s->irr[5], s->irr[6], s->irr[7]);
+    log("  .lvt =    [   0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 "],\n",
+        s->lvt[0], s->lvt[1], s->lvt[2], s->lvt[3], s->lvt[4], s->lvt[5], s->lvt[6]);
+    log("  .aeoi =   [   0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 ", 0x%08" PRIx32 "] }\n",
+        s->aeoi[0], s->aeoi[1], s->aeoi[2], s->aeoi[3], s->aeoi[4], s->aeoi[5], s->aeoi[6], s->aeoi[7]);
+    //   */
+}
+
 #pragma mark -
 
 
@@ -96,7 +137,7 @@ void hvf_apic_follow_up_exit_info(APICCommonState *s, hv_vm_exitinfo_t exit_info
     {
         uint32_t vmx_status = 0;
         r = hv_vcpu_vmx_status(vcpu, &vmx_status);
-        log("hvf_apic_follow_up_exit_info: hv_vcpu_vmx_status -> 0x%x (%{public}s), status = 0x%x\n", r, hvf_return_string(r), vmx_status);
+        log("hvf_apic_follow_up_exit_info: hv_vcpu_vmx_status -> 0x%x (%" LP "s), status = 0x%x\n", r, hvf_return_string(r), vmx_status);
         assert_hvf_ok(r);
         assert(vmx_status == 0);
         break;
@@ -114,7 +155,7 @@ void hvf_apic_follow_up_exit_info(APICCommonState *s, hv_vm_exitinfo_t exit_info
         for (hv_vcpuid_t i = 0; i < vcpu_id_count; ++i) {
             pos += snprintf(pos, active_vcpu_str_buf + sizeof(active_vcpu_str_buf) - pos, "%c ", cpus_active[i] ? '1' : '0');
         }
-        log("hvf_apic_follow_up_exit_info: hv_vcpu_exit_init_ap() -> 0x%x (%{public}s), cpus_active = [ %{public}s]\n",
+        log("hvf_apic_follow_up_exit_info: hv_vcpu_exit_init_ap() -> 0x%x (%" LP "s), cpus_active = [ %" LP "s]\n",
             r, hvf_return_string(r), active_vcpu_str_buf);
         
         
@@ -143,6 +184,7 @@ void hvf_apic_follow_up_exit_info(APICCommonState *s, hv_vm_exitinfo_t exit_info
                 assert_hvf_ok(r);*/
             } else {
                 log("hvf_apic_follow_up_exit_info: CPU %u: no INIT interrupt on first AP INIT\n", cpu->cpu_index);
+                //cpu_interrupt(cpu, CPU_INTERRUPT_INIT);
             }
         }
         break;
@@ -161,17 +203,13 @@ void hvf_apic_follow_up_exit_info(APICCommonState *s, hv_vm_exitinfo_t exit_info
         for (hv_vcpuid_t i = 0; i < vcpu_id_count; ++i) {
             pos += snprintf(pos, active_vcpu_str_buf + sizeof(active_vcpu_str_buf) - pos, "%c ", cpus_active[i] ? '1' : '0');
         }
-        log("hvf_apic_follow_up_exit_info: hv_vcpu_exit_startup_ap() -> 0x%x (%{public}s), cpus_active = [ %{public}s], ap_rip = 0x%llx\n",
+        log("hvf_apic_follow_up_exit_info: hv_vcpu_exit_startup_ap() -> 0x%x (%" LP "s), cpus_active = [ %" LP "s], ap_rip = 0x%llx\n",
             r, hvf_return_string(r), active_vcpu_str_buf, ap_rip);
-        
-        /*
-        hv_atpic_state_ext_t atpic_state = { .version = HV_ATPIC_STATE_EXT_VER };
-        r = hv_vm_atpic_get_state(&atpic_state, true);
-        */
         
         CPUState *cpus_to_kick[vcpu_id_count];
         uint32_t num_cpus_to_kick = 0;
         CPUState *some_cpu;
+        
         cpu_list_lock();
         CPU_FOREACH(some_cpu) {
             if (cpus_active[some_cpu->accel->fd]) {
@@ -234,7 +272,7 @@ void hvf_apic_follow_up_exit_info(APICCommonState *s, hv_vm_exitinfo_t exit_info
         // (I think this is after vCPU run only)
         uint32_t apic_reg = UINT32_MAX;
         hv_return_t res = hv_vcpu_exit_apic_access_read(vcpu, &apic_reg);
-        log("hvf_apic_follow_up_exit_info: exit_info = HV_VM_EXITINFO_APIC_ACCESS_READ, value = 0x%x (hv_vcpu_exit_apic_access_read -> 0x%x %{public}s)\n", apic_reg, res, hvf_return_string(res));
+        log("hvf_apic_follow_up_exit_info: exit_info = HV_VM_EXITINFO_APIC_ACCESS_READ, value = 0x%x (hv_vcpu_exit_apic_access_read -> 0x%x %" LP "s)\n", apic_reg, res, hvf_return_string(res));
         exit(1);
         break;
     }
@@ -264,6 +302,7 @@ static void hvf_apic_send_msi(MSIMessage *msg)
 {
     /* hv_vm_lapic_msi() wants the full GPA, not just the offset */
     uint64_t msi_address = msg->address | 0xfee00000;
+    log("hvf_apic_send_msi: address = 0x%llx, data = 0x%x\n", msi_address, msg->data);
     assert_hvf_ok(hv_vm_lapic_msi(msi_address, msg->data));
 }
 
@@ -278,8 +317,6 @@ static MemTxResult hvf_apic_mem_read(void *opaque, hwaddr addr, uint64_t *data,
     DeviceState *dev = cpu_get_current_apic();
     if (dev == NULL) {
 #pragma mark DEBUG
-        fprintf(stderr, "hvf_apic_mem_write: WARNING! No current APIC found, ignoring %u byte read from 0x%llx\n",
-            size, addr);
         log("hvf_apic_mem_write: WARNING! No current APIC found, ignoring %u byte read from 0x%llx\n",
             size, addr);
 #pragma mark -
@@ -314,7 +351,7 @@ static MemTxResult hvf_apic_mem_read(void *opaque, hwaddr addr, uint64_t *data,
 #pragma mark DEBUG
         if (addr == 0x300) {
             uint32_t d = read_value;
-            log("hvf_apic_mem_read[%u] ICR read: vector: 0x%02x, mode: %u (%{public}s), dest mode: %u, status: %u, init level deassert 0: %u, init level deassert 1: %u, destination type: %u (%{public}s), reserved: 0x%x\n",
+            log("hvf_apic_mem_read[%u] ICR read: vector: 0x%02x, mode: %u (%" LP "s), dest mode: %u, status: %u, init level deassert 0: %u, init level deassert 1: %u, destination type: %u (%" LP "s), reserved: 0x%x\n",
             CPU(s->cpu)->cpu_index,
             d & 0xff,
             (d >> 8) & 0x7, apic_dest_mode_str((d >> 8) & 0x7),
@@ -360,8 +397,6 @@ static void hvf_apic_mem_write(void *opaque, hwaddr addr,
     dev = cpu_get_current_apic();
     if (dev == NULL) {
 #pragma mark DEBUG
-        fprintf(stderr, "hvf_apic_mem_write: WARNING! No current APIC found, ignoring %u byte write of 0x%llx at 0x%llx\n",
-            size, data, addr);
         log("hvf_apic_mem_write: WARNING! No current APIC found, ignoring %u byte write of 0x%llx at 0x%llx\n",
             size, data, addr);
 #pragma mark -
@@ -407,7 +442,7 @@ static void hvf_apic_mem_write(void *opaque, hwaddr addr,
 
     if (addr == 0x300 && ((data >> 8) & 0x7) >= 5)
     {
-        log("hvf_apic_mem_write_job[cpu %u]: %{public}s to %{public}s destination\n", //; APIC state before write:\n",
+        log("hvf_apic_mem_write_job[cpu %u]: %" LP "s to %" LP "s destination\n", //; APIC state before write:\n",
             cpu->cpu_index,
             apic_dest_mode_str(((data >> 8) & 0x7)), apic_dest_type_str((data >> 18) & 0x3));
         //hvf_dump_kernel_apic_state(apic);
@@ -419,12 +454,12 @@ static void hvf_apic_mem_write(void *opaque, hwaddr addr,
 
 #pragma mark DEBUG
     if (!skip_log || result != HV_SUCCESS)
-        log("hvf_apic_mem_write_job hv_vcpu_apic_write[%u](addr = 0x%llx, data = 0x%llx) -> 0x%x (%{public}s) no_side_effect = %{public}s\n",
+        log("hvf_apic_mem_write_job hv_vcpu_apic_write[%u](addr = 0x%llx, data = 0x%llx) -> 0x%x (%" LP "s) no_side_effect = %" LP "s\n",
             cpu->cpu_index, addr, data, result, hvf_return_string(result), no_side_effect ? "true" : "false");
  
     if (addr == 0x300) {
         uint32_t d = data;
-        log("hvf_apic_mem_write_job[%u] ICR write: vector: 0x%02x, mode: %u (%{public}s), dest mode: %u, status: %u, init level deassert 0: %u, init level deassert 1: %u, destination type: %u (%{public}s), reserved: 0x%x\n",
+        log("hvf_apic_mem_write_job[%u] ICR write: vector: 0x%02x, mode: %u (%" LP "s), dest mode: %u, status: %u, init level deassert 0: %u, init level deassert 1: %u, destination type: %u (%" LP "s), reserved: 0x%x\n",
             cpu->cpu_index,
             d & 0xff,
             (d >> 8) & 0x7, apic_dest_mode_str((d >> 8) & 0x7),
@@ -441,7 +476,7 @@ static void hvf_apic_mem_write(void *opaque, hwaddr addr,
         hv_vm_exitinfo_t exit_info = 0;
         result = hv_vcpu_exit_info(vcpu, &exit_info);
 #pragma mark DEBUG
-        log("hvf_apic_mem_write_job hv_vcpu_exit_info -> exit info: %u (%{public}s), result: 0x%x (%{public}s)\n", exit_info, hvf_exit_info_string(exit_info), result, hvf_return_string(result));
+        log("hvf_apic_mem_write_job hv_vcpu_exit_info -> exit info: %u (%" LP "s), result: 0x%x (%" LP "s)\n", exit_info, hvf_exit_info_string(exit_info), result, hvf_return_string(result));
 #pragma mark -
         hvf_apic_follow_up_exit_info(s, exit_info);
     }
@@ -449,7 +484,7 @@ static void hvf_apic_mem_write(void *opaque, hwaddr addr,
 #pragma mark DEBUG
     if (addr == 0x300 && ((data >> 8) & 0x7) >= 5)
     {
-        log("hvf_apic_mem_write: %{public}s to %{public}s destination; APIC state after write:\n", apic_dest_mode_str(((data >> 8) & 0x7)), apic_dest_type_str((data >> 18) & 0x3));
+        log("hvf_apic_mem_write: %" LP "s to %" LP "s destination; APIC state after write:\n", apic_dest_mode_str(((data >> 8) & 0x7)), apic_dest_type_str((data >> 18) & 0x3));
         //hvf_dump_kernel_apic_state(apic);
     }
     
@@ -477,120 +512,199 @@ static const MemoryRegionOps hvf_apic_io_ops = {
 static void hvf_apic_realize(DeviceState *dev, Error **errp)
 {
     APICCommonState *s = APIC_COMMON(dev);
+    log("hvf_apic_realize[APIC %u]\n", s->id);
+    hv_vcpuid_t vcpu = CPU(s->cpu)->accel->fd;
     memory_region_init_io(&s->io_memory, OBJECT(s), &hvf_apic_io_ops, s,
                           "hvf-apic-msi", 0x1000);
     msi_nonbroken = true;
+    // Get HV kernel APIC to handle MMIO?
+    hv_vmx_vcpu_set_apic_address(vcpu, APIC_DEFAULT_ADDRESS);
 }
 
 static void hvf_apic_set_base(APICCommonState *s, uint64_t val)
-+{
-+    uint32_t new_base_addr, old_base_addr;
-+    uint32_t new_flags, old_flags;
-+
-+    new_base_addr = val & MSR_IA32_APICBASE_BASE;
-+    old_base_addr = s->apicbase & MSR_IA32_APICBASE_BASE;
-+    
-+    new_flags = val & MSR_IA32_APICBASE_FLAGS_MASK;
-+    old_flags = s->apicbase & MSR_IA32_APICBASE_FLAGS_MASK;
-+
-+    log("hvf_apic_set_base: s = %p { id = %u, arb_id = %u}, val = 0x%llx, flags: 0x%x -> 0x%x\n",
-+        s, s->id, s->arb_id, val, old_flags, new_flags);
-+
-+    //hvf_dump_kernel_apic_state(s);
-+    
-+    assert(qemu_mutex_iothread_locked());
-+
-+    // The only valid pattern of change (other than no change) in the flags is:
-+    // (old_flags -> new_flags)
-+    // 0 -> ENABLE
-+    // ENABLE -> 0
-+    // ENABLE -> ENABLE | EXTD
-+    // ENABLE | EXTD -> 0
-+    // Additionally, the base address must fit in 32 bits, and the low bits of the register are reserved
-+    if (!(new_flags == 0                  // transition to 0 (disable) is always allowed
-+          || new_flags == old_flags
-+          || (old_flags == 0 && new_flags == MSR_IA32_APICBASE_ENABLE)
-+          || (old_flags == MSR_IA32_APICBASE_ENABLE && new_flags == MSR_IA32_APICBASE_FLAGS_X2APIC_ENABLED))
-+        || val > UINT32_MAX
-+        || 0 != (val & MSR_IA32_APICBASE_RESERVED_MASK)) {
-+        log("hvf_apic_set_base: setting bad APICBASE flags or value (0x%x -> 0x%x, val = 0x%llx)\n", old_flags, new_flags, val);
-+        
-+        CPUX86State *env = &X86_CPU(s->cpu)->env;
-+        
-+        env->exception_nr = EXCP0D_GPF;
-+        env->exception_injected = 1;
-+        env->has_error_code = true;
-+        env->error_code = 0;
-+
-+        return;
-+    }
-+
-+    bool enabling, disabling, mmio_enabled, mmio_was_enabled, moving_mmio;
-+
-+    moving_mmio = new_base_addr != old_base_addr;
-+    
-+    if ((val & MSR_IA32_APICBASE_ENABLE) != (s->apicbase & MSR_IA32_APICBASE_ENABLE)) {
-+        disabling = !(val & MSR_IA32_APICBASE_ENABLE);
-+        enabling = !disabling;
-+    } else {
-+        enabling = disabling = false;
-+    }
-+    
-+    // MMIO is enabled if APIC is enabled but NOT x2apic
-+    mmio_enabled = (new_flags == MSR_IA32_APICBASE_ENABLE);
-+    mmio_was_enabled = (old_flags == MSR_IA32_APICBASE_ENABLE);
-+    
-+    //hv_vcpuid_t vcpu = CPU(s->cpu)->hvf->fd;
-+    log("hvf_apic_set_base: enabling = %s, disabling = %s, moving_mmio = %s, new_base_addr = 0x%x, old_base_addr = 0x%x\n",
-+        enabling ? "yes" : "no", disabling ? "yes" : "no", moving_mmio ? "yes" : "no",
-+        new_base_addr, old_base_addr);
-+ 
-+    s->apicbase =
-+        new_base_addr |
-+        new_flags |
-+        (s->apicbase & MSR_IA32_APICBASE_BSP);
-+    
-+    if (/*mmio_enabled != mmio_was_enabled ||*/ moving_mmio) {
-+        hv_vcpuid_t vcpu = CPU(s->cpu)->hvf->fd;
-+        /*if (!mmio_enabled || (mmio_was_enabled && moving_mmio)) {*/
-+            log("hvf_apic_set_base: disabling APIC mmio\n");
-+            memory_region_del_subregion(get_system_memory(), &s->io_memory);
-+        /*    if (!mmio_enabled) {
-+                hv_return_t result = hv_vmx_vcpu_set_apic_address(vcpu, 0);
-+                assert_hvf_ok(result);
-+            }
-+        }
-+        
-+        if (mmio_enabled) {*/
-+            log("hvf_apic_set_base: enabling APIC mmio at 0x%x\n", new_base_addr);
-+            hv_return_t result = hv_vmx_vcpu_set_apic_address(vcpu, new_base_addr);
-+            assert_hvf_ok(result);
-+            memory_region_add_subregion_overlap(get_system_memory(),
-+                                                new_base_addr,
-+                                                &s->io_memory,
-+                                                0x1000);
-+       // }
-+    }
-+    
-+    if (disabling) {
-+        s->apicbase &= ~MSR_IA32_APICBASE_ENABLE;
-+        cpu_clear_apic_feature(&s->cpu->env);
-+        s->spurious_vec &= ~APIC_SV_ENABLE;
-+    }
-+
-+    if (enabling) {
-+        s->apicbase |= MSR_IA32_APICBASE_ENABLE;
-+        s->cpu->env.features[FEAT_1_EDX] |= CPUID_APIC;
-+        s->spurious_vec |= APIC_SV_ENABLE;
-+    }
-+
-+
-+}
+{
+    uint32_t new_base_addr, old_base_addr;
+    uint32_t new_flags, old_flags;
 
+    new_base_addr = val & MSR_IA32_APICBASE_BASE;
+    old_base_addr = s->apicbase & MSR_IA32_APICBASE_BASE;
+    
+    new_flags = val & MSR_IA32_APICBASE_FLAGS_MASK;
+    old_flags = s->apicbase & MSR_IA32_APICBASE_FLAGS_MASK;
+
+    log("hvf_apic_set_base: s = %p { id = %u, arb_id = %u}, val = 0x%llx, flags: 0x%x -> 0x%x\n",
+        s, s->id, s->arb_id, val, old_flags, new_flags);
+
+    //hvf_dump_kernel_apic_state(s);
+    
+    assert(qemu_mutex_iothread_locked());
+
+    // The only valid pattern of change (other than no change) in the flags is:
+    // (old_flags -> new_flags)
+    // 0 -> ENABLE
+    // ENABLE -> 0
+    // ENABLE -> ENABLE | EXTD
+    // ENABLE | EXTD -> 0
+    // Additionally, the base address must fit in 32 bits, and the low bits of the register are reserved
+    if (!(new_flags == 0                  // transition to 0 (disable) is always allowed
+          || new_flags == old_flags
+          || (old_flags == 0 && new_flags == MSR_IA32_APICBASE_ENABLE)
+          || (old_flags == MSR_IA32_APICBASE_ENABLE && new_flags == MSR_IA32_APICBASE_FLAGS_X2APIC_ENABLED))
+        || val > UINT32_MAX
+        || 0 != (val & MSR_IA32_APICBASE_RESERVED_MASK)) {
+        log("hvf_apic_set_base: setting bad APICBASE flags or value (0x%x -> 0x%x, val = 0x%llx)\n", old_flags, new_flags, val);
+        
+        CPUX86State *env = &X86_CPU(s->cpu)->env;
+        
+        env->exception_nr = EXCP0D_GPF;
+        env->exception_injected = 1;
+        env->has_error_code = true;
+        env->error_code = 0;
+
+        return;
+    }
+
+    bool enabling, disabling, mmio_enabled, moving_mmio;
+
+    moving_mmio = new_base_addr != old_base_addr;
+    
+    if ((val & MSR_IA32_APICBASE_ENABLE) != (s->apicbase & MSR_IA32_APICBASE_ENABLE)) {
+        disabling = !(val & MSR_IA32_APICBASE_ENABLE);
+        enabling = !disabling;
+    } else {
+        enabling = disabling = false;
+    }
+    
+    // MMIO is enabled if APIC is enabled but NOT x2apic
+    mmio_enabled = (new_flags == MSR_IA32_APICBASE_ENABLE);
+    
+    //hv_vcpuid_t vcpu = CPU(s->cpu)->hvf->fd;
+    log("hvf_apic_set_base: enabling = %s, disabling = %s, moving_mmio = %s, new_base_addr = 0x%x, old_base_addr = 0x%x\n",
+        enabling ? "yes" : "no", disabling ? "yes" : "no", moving_mmio ? "yes" : "no",
+        new_base_addr, old_base_addr);
+ 
+    s->apicbase =
+        new_base_addr |
+        new_flags |
+        (s->apicbase & MSR_IA32_APICBASE_BSP);
+    
+    if (/*mmio_enabled != mmio_was_enabled ||*/ moving_mmio) {
+        /*
+        TODO: Implement APIC remapping
+        (the following is broken because it's not per-vCPU, and stops MSIs trapping) */
+        hv_vcpuid_t vcpu = CPU(s->cpu)->accel->fd;
+        log("hvf_apic_set_base: disabling APIC mmio\n");
+        memory_region_del_subregion(get_system_memory(), &s->io_memory);
+        
+        if (mmio_enabled) {
+            log("hvf_apic_set_base: enabling APIC mmio at 0x%x\n", new_base_addr);
+            hv_return_t result = hv_vmx_vcpu_set_apic_address(vcpu, new_base_addr);
+            assert_hvf_ok(result);
+            memory_region_add_subregion_overlap(get_system_memory(),
+                                                new_base_addr,
+                                                &s->io_memory,
+                                                0x1000);
+       }
+    }
+    
+    if (disabling) {
+        s->apicbase &= ~MSR_IA32_APICBASE_ENABLE;
+        cpu_clear_apic_feature(&s->cpu->env);
+        s->spurious_vec &= ~APIC_SV_ENABLE;
+    }
+
+    if (enabling) {
+        s->apicbase |= MSR_IA32_APICBASE_ENABLE;
+        s->cpu->env.features[FEAT_1_EDX] |= CPUID_APIC;
+        s->spurious_vec |= APIC_SV_ENABLE;
+    }
+
+
+}
+
+static void hvf_apic_set_tpr(APICCommonState *s, uint8_t val)
+{
+    if (val != 0)
+        log("hvf_apic_set_tpr[APIC %u]: val = 0x%x\n", s->id, val);
+}
+
+static uint8_t hvf_apic_get_tpr(APICCommonState *s)
+{
+    bool apic_enabled = 0 != (s->apicbase & MSR_IA32_APICBASE_ENABLE);
+    uint64_t val = 0;
+    uint32_t val1 = 0;
+    hv_vcpuid_t vcpuid = CPU(s->cpu)->accel->fd;
+    hv_return_t result = HV_SUCCESS;
+    hv_return_t result1 = HV_SUCCESS;
+    val1 = (uint32_t)val;
+    if (apic_enabled) {
+        result = result1 = hv_vcpu_apic_read(vcpuid, 0x0080, &val1);
+        if (result1 == HV_SUCCESS) {
+            val1 >>= 4u;
+            val = val1;
+            //log("hvf_apic_get_tpr[APIC %u] hv_vcpu_apic_read -> 0x%llx (0x%x)\n", s->id,
+            //   val, result);
+        }
+    }
+    //if (result != HV_SUCCESS || !apic_enabled) {
+        result = hv_vcpu_read_register(vcpuid, HV_X86_TPR, &val);
+        //log("hvf_apic_get_tpr[APIC %u] hv_vcpu_read_register -> 0x%llx (0x%x)\n", s->id,
+        //    val, result);
+    //}
+    if (result != HV_SUCCESS || result1 != HV_SUCCESS || val1 != val) {
+        log("hvf_apic_get_tpr[APIC: %s]: s = %p { id = %u, arb_id = %u } cpureg -> 0x%llx (-> 0x%x | %s), apic_reg -> 0x%x (-> 0x%x | %s)\n",
+            apic_enabled ? "enabled" : "DISABLED",
+            s, s->id, s->arb_id,
+            val,  result,  hvf_return_string(result),
+            val1, result1, hvf_return_string(result1));
+    }
+    //printf("r");
+    return val;
+}
+
+static void hvf_apic_enable_tpr_reporting(APICCommonState *s, bool enable)
+{
+    log("hvf_apic_enable_tpr_reporting: s = %p { id = %u, arb_id = %u }, enable = %s\n",
+        s, s->id, s->arb_id, enable ? "true" : "false");
+}
+
+static void hvf_apic_vapic_base_update(APICCommonState *s)
+{
+    log("hvf_apic_vapic_base_update: vapic_paddr = 0x%llx\n", s->vapic_paddr);
+}
+
+static void hvf_apic_do_reset(CPUState *cs, run_on_cpu_data data)
+{
+    APICCommonState *ca = APIC_COMMON(data.host_ptr);
+
+    hv_apic_state_ext_t apic_state = { .version = HV_APIC_STATE_EXT_VER, };
+    hv_return_t result = hv_vcpu_apic_get_state(cs->accel->fd, &apic_state);
+    if (result == HV_SUCCESS)
+        ca->apicbase = apic_state.state.apic_gpa;
+    
+    hvf_dump_kernel_apic_state(ca);
+    
+    uint64_t tmp = 0;
+    hv_return_t res = hv_vcpu_read_msr(cs->accel->fd, MSR_IA32_APICBASE, &tmp);
+    log("hvf_apic_do_reset[%u]: MSR_IA32_APICBASE -> 0x%x (%" LP "s), 0x%llx\n", cs->cpu_index, res, hvf_return_string(res), tmp);
+    if (res == HV_SUCCESS)
+        ca->apicbase = tmp;
+}
 
 static void hvf_apic_reset(APICCommonState *s)
 {
     log("hvf_apic_reset[%u]\n", CPU(s->cpu)->cpu_index);
+    //if (hvf_s->has_performed_initial_reset) {
+        run_on_cpu(CPU(s->cpu), hvf_apic_do_reset, RUN_ON_CPU_HOST_PTR(s));
+    //} else {
+     //   hvf_s->has_performed_initial_reset = true;
+    //}
+}
+
+static void hvf_apic_external_nmi(APICCommonState *s)
+{
+    log("hvf_apic_external_nmi: s = %p { id = %u, arb_id = %u }\n",
+        s, s->id, s->arb_id);
 }
 
 static void hvf_apic_class_init(ObjectClass *klass, void *data)
@@ -601,7 +715,6 @@ static void hvf_apic_class_init(ObjectClass *klass, void *data)
     k->set_base = hvf_apic_set_base;
     k->set_tpr = hvf_apic_set_tpr;
     k->get_tpr = hvf_apic_get_tpr;
-    k->post_load = hvf_apic_post_load;
     k->enable_tpr_reporting = hvf_apic_enable_tpr_reporting;
     k->vapic_base_update = hvf_apic_vapic_base_update;
     k->external_nmi = hvf_apic_external_nmi;

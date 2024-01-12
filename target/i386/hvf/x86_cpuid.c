@@ -69,6 +69,9 @@ uint32_t hvf_get_supported_cpuid(uint32_t func, uint32_t idx,
              CPUID_EXT_POPCNT | CPUID_EXT_AES | CPUID_EXT_XSAVE |
              CPUID_EXT_AVX | CPUID_EXT_F16C | CPUID_EXT_RDRAND;
         ecx |= CPUID_EXT_HYPERVISOR;
+        if (hvf_irqchip_in_kernel()) {
+            ecx |= CPUID_EXT_X2APIC | CPUID_EXT_TSC_DEADLINE_TIMER;
+        }
         break;
     case 6:
         eax = CPUID_6_EAX_ARAT;

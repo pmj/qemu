@@ -211,7 +211,9 @@ static inline bool apic_bus_freq_is_known(CPUX86State *env)
 void hvf_kick_vcpu_thread(CPUState *cpu)
 {
     cpus_kick_thread(cpu);
-    hv_vcpu_interrupt(&cpu->accel->fd, 1);
+    if (!cpu->halted && !cpu->stopped) { // APIC TODO: Not sure this needs to be conditional
+        hv_vcpu_interrupt(&cpu->accel->fd, 1);
+    }
 }
 
 int hvf_arch_init(void)
@@ -257,6 +259,7 @@ int hvf_arch_init_vcpu(CPUState *cpu)
     X86CPU *x86cpu = X86_CPU(cpu);
     CPUX86State *env = &x86cpu->env;
     uint64_t reqCap;
+    hv_return_t result;
 
     init_emu();
     init_decoder();
@@ -310,6 +313,11 @@ int hvf_arch_init_vcpu(CPUState *cpu)
     if (hvf_get_supported_cpuid(0x80000001, 0, R_EDX) & CPUID_EXT2_RDTSCP) {
         reqCap |= VMCS_PRI_PROC_BASED2_CTLS_RDTSCP;
     }
+    
+    if (hvf_irqchip_in_kernel()) {
+        // APIC TODO: Check if this is needed or exactly what difference it makes
+        reqCap = VMCS_PRI_PROC_BASED2_CTLS_X2APIC | VMCS_PRI_PROC_BASED2_APIC_REG_VIRT;
+    }
 
     wvmcs(cpu->accel->fd, VMCS_SEC_PROC_BASED_CTLS,
           cap2ctrl(hvf_state->hvf_caps->vmx_cap_procbased2, reqCap));
@@ -343,6 +351,11 @@ int hvf_arch_init_vcpu(CPUState *cpu)
     hv_vcpu_enable_native_msr(cpu->accel->fd, MSR_IA32_SYSENTER_EIP, 1);
     hv_vcpu_enable_native_msr(cpu->accel->fd, MSR_IA32_SYSENTER_ESP, 1);
 
+    // APIC TODO: Check if this is needed, and under what conditions
+    if (hvf_irqchip_in_kernel()) {
+        result = hv_vcpu_apic_ctrl(cpu->accel->fd, HV_APIC_CTRL_IOAPIC_EOI);
+        assert_hvf_ok(result);
+    }
     return 0;
 }
 
@@ -469,6 +482,8 @@ int hvf_vcpu_exec(CPUState *cpu)
     CPUX86State *env = &x86_cpu->env;
     int ret = 0;
     uint64_t rip = 0;
+    hv_return_t r;
+    hv_vm_exitinfo_t exit_info = 0;
 
     if (hvf_process_events(cpu)) {
         return EXCP_HLT;
@@ -491,8 +506,18 @@ int hvf_vcpu_exec(CPUState *cpu)
             return EXCP_HLT;
         }
 
-        hv_return_t r = hvf_vcpu_run(cpu->accel->fd);
+        r = hvf_vcpu_run(cpu->accel->fd);
         assert_hvf_ok(r);
+
+        r = hv_vcpu_exit_info(cpu->accel->fd, &exit_info);
+        assert_hvf_ok(r);
+        uint32_t vmx_status = 0;
+        if (r == HV_SUCCESS && exit_info == HV_VM_EXITINFO_VMX)
+        {
+            r = hv_vcpu_vmx_status(cpu->accel->fd, &vmx_status);
+            assert_hvf_ok(r);
+            assert(vmx_status == 0);
+        }
 
         /* handle VMEXIT */
         uint64_t exit_reason = rvmcs(cpu->accel->fd, VMCS_EXIT_REASON);
@@ -511,6 +536,12 @@ int hvf_vcpu_exec(CPUState *cpu)
         update_apic_tpr(cpu);
         current_cpu = cpu;
 
+        if (exit_info != HV_VM_EXITINFO_VMX)
+        {
+            fprintf(stderr, "hvf_vcpu_exec[%u]: exit info %u\n", cpu->cpu_index, exit_info);
+            hvf_apic_follow_up_exit_info(APIC_COMMON(X86_CPU(cpu)->apic_state), exit_info);
+        }
+
         ret = 0;
         switch (exit_reason) {
         case EXIT_REASON_HLT: {
@@ -519,7 +550,9 @@ int hvf_vcpu_exec(CPUState *cpu)
                 (env->eflags & IF_MASK))
                 && !(cpu->interrupt_request & CPU_INTERRUPT_NMI) &&
                 !(idtvec_info & VMCS_IDT_VEC_VALID)) {
-                cpu->halted = 1;
+                if (!hvf_irqchip_in_kernel()) {
+                    cpu->halted = 1;
+                }
                 ret = EXCP_HLT;
                 break;
             }
@@ -692,6 +725,8 @@ int hvf_vcpu_exec(CPUState *cpu)
             break;
         }
         case EXIT_REASON_APIC_ACCESS: { /* TODO */
+            fprintf(stderr, "hvf_vcpu_exec[%u]: EXIT_REASON_APIC_ACCESS\n",
+                cpu->cpu_index);
             struct x86_decode decode;
 
             load_regs(cpu);

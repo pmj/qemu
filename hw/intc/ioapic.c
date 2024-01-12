@@ -31,10 +31,15 @@
 #include "hw/pci/msi.h"
 #include "hw/qdev-properties.h"
 #include "sysemu/kvm.h"
+#include "sysemu/hvf.h"
 #include "sysemu/sysemu.h"
 #include "hw/i386/apic-msidef.h"
 #include "hw/i386/x86-iommu.h"
 #include "trace.h"
+
+#ifdef CONFIG_HVF
+#include <Hypervisor/hv.h>
+#endif
 
 #define APIC_DELIVERY_MODE_SHIFT 8
 #define APIC_POLARITY_SHIFT 14
@@ -130,6 +135,16 @@ static void ioapic_service(IOAPICCommonState *s)
                     continue;
                 }
 #endif
+#ifdef CONFIG_HVF
+                if (hvf_irqchip_in_kernel()) {
+                    // APIC TODO: Ensure this does what we think it does, and that it's needed.
+                    uint64_t vector = s->ioredtbl[i];
+                    hv_return_t res = hv_vm_send_ioapic_intr(vector);
+
+                    fprintf(stderr, "ioapic_service, i = %u, hv_vm_send_ioapic_intr(0x%llx) -> 0x%x\n", i, vector, res);
+                }
+#endif
+
 
                 /* No matter whether IR is enabled, we translate
                  * the IOAPIC message into a MSI one, and its

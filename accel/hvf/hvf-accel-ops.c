@@ -572,6 +572,22 @@ static void hvf_remove_all_breakpoints(CPUState *cpu)
     }
 }
 
+#if HVF_APIC_ACCEL_AVAILABLE
+static bool hvf_vcpu_thread_is_idle(CPUState *cpu)
+{
+    if (hvf_irqchip_in_kernel())
+    {
+        // Kernel vAPIC, so the vCPU thread should sleep in the kernel unless CPU is halted
+        return cpu->halted;
+    }
+    else
+    {
+        return true;
+    }
+}
+#endif
+
+
 static void hvf_accel_ops_class_init(ObjectClass *oc, void *data)
 {
     AccelOpsClass *ops = ACCEL_OPS_CLASS(oc);
@@ -589,6 +605,10 @@ static void hvf_accel_ops_class_init(ObjectClass *oc, void *data)
     ops->remove_all_breakpoints = hvf_remove_all_breakpoints;
     ops->update_guest_debug = hvf_update_guest_debug;
     ops->supports_guest_debug = hvf_arch_supports_guest_debug;
+
+#if HVF_APIC_ACCEL_AVAILABLE
+    ops->cpu_thread_is_idle = hvf_vcpu_thread_is_idle;
+#endif
 };
 static const TypeInfo hvf_accel_ops_type = {
     .name = ACCEL_OPS_NAME("hvf"),

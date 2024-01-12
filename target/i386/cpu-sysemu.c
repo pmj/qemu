@@ -22,6 +22,7 @@
 #include "sysemu/kvm.h"
 #include "sysemu/xen.h"
 #include "sysemu/whpx.h"
+#include "sysemu/hvf.h"
 #include "qapi/error.h"
 #include "qapi/qapi-visit-run-state.h"
 #include "qapi/qmp/qdict.h"
@@ -262,6 +263,8 @@ APICCommonClass *apic_get_class(Error **errp)
         apic_type = "xen-apic";
     } else if (whpx_apic_in_platform()) {
         apic_type = "whpx-apic";
+    } else if (hvf_irqchip_in_kernel()) {
+        apic_type = "hvf-apic";
     }
 
     return APIC_COMMON_CLASS(object_class_by_name(apic_type));

@@ -494,12 +494,16 @@ static void apic_get_delivery_bitmask(uint32_t *deliver_bitmask,
 static void apic_startup(APICCommonState *s, int vector_num)
 {
     s->sipi_vector = vector_num;
+    fprintf(stderr, "apic_startup[%u] vector 0x%x\n", s->id, vector_num);
     cpu_interrupt(CPU(s->cpu), CPU_INTERRUPT_SIPI);
 }
 
 void apic_sipi(DeviceState *dev)
 {
-    APICCommonState *s = APIC(dev);
+    // TODO: If we really need this in HVF APIC mode, move it to apic_common.c. But debug this being needed at all first.
+    APICCommonState *s = APIC_COMMON(dev);
+    fprintf(stderr, "apic_sipi[%u], wait_for_sipi = %s, vector = 0x%x\n",
+        s->id, s->wait_for_sipi ? "yes" : "no", s->sipi_vector);
 
     cpu_reset_interrupt(CPU(s->cpu), CPU_INTERRUPT_SIPI);
 
@@ -549,6 +553,7 @@ static void apic_deliver(DeviceState *dev, uint8_t dest, uint8_t dest_mode,
             break;
 
         case APIC_DM_SIPI:
+            fprintf(stderr, "apic_deliver: SIPI, deliver_bitmask[0] = 0x%x, vector_num = 0x%x\n", deliver_bitmask[0], vector_num);
             foreach_apic(apic_iter, deliver_bitmask,
                          apic_startup(apic_iter, vector_num) );
             return;

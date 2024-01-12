@@ -749,7 +749,7 @@ void simulate_rdmsr(CPUX86State *env)
         val |= ((uint32_t)cs->nr_cores << 16); /* core count, bits 31..16 */
         break;
     default:
-        /* fprintf(stderr, "%s: unknown msr 0x%x\n", __func__, msr); */
+        fprintf(stderr, "%s[%u]: unknown msr 0x%x\n", __func__, cs->cpu_index, msr);
         val = 0;
         break;
     }
@@ -843,6 +843,7 @@ void simulate_wrmsr(CPUX86State *env)
         env->mtrr_deftype = data;
         break;
     default:
+        fprintf(stderr, "%s[%u]: unknown msr 0x%x\n", __func__, cs->cpu_index, msr);
         break;
     }
 
