@@ -5,6 +5,7 @@
 #include "qemu/osdep.h"
 #include "qom/object.h"
 #include "hw/i386/apic_internal.h"
+#include "hw/i386/apic-msidef.h"
 #include "hw/intc/ioapic.h"
 #include "hw/pci/msi.h"
 #include "sysemu/hvf.h"
@@ -297,6 +298,43 @@ void hvf_apic_follow_up_exit_info(APICCommonState *s, hv_vm_exitinfo_t exit_info
 
 }
 
+static void apic_send_msi(MSIMessage *msi)
+{
+    CPUState *some_cpu;
+    hv_return_t r;
+    uint64_t addr = msi->address;
+    uint32_t data = msi->data;
+    uint8_t dest = (addr & MSI_ADDR_DEST_ID_MASK) >> MSI_ADDR_DEST_ID_SHIFT;
+    uint8_t vector = (data & MSI_DATA_VECTOR_MASK) >> MSI_DATA_VECTOR_SHIFT;
+    uint8_t dest_mode = (addr >> MSI_ADDR_DEST_MODE_SHIFT) & 0x1;
+    uint8_t trigger_mode = (data >> MSI_DATA_TRIGGER_SHIFT) & 0x1;
+    uint8_t level = (data >> MSI_DATA_LEVEL_SHIFT) & 0x1;
+    uint8_t delivery = (data >> MSI_DATA_DELIVERY_MODE_SHIFT) & 0x7;
+    
+    if (dest_mode == 0)
+    {
+        hvf_vcpuid vcpu_id;
+        bool found = false;
+        cpu_list_lock();
+        CPU_FOREACH(some_cpu) {
+            APICCommonState *apic = APIC_COMMON(X86_CPU(some_cpu)->apic_state);
+
+            if (apic->id == dest) {
+                found = true;
+                vcpu_id = some_cpu->accel->fd;
+            }
+        }
+        cpu_list_unlock();
+        if (found)
+        {
+            r = hv_vm_lapic_set_intr(vcpu_id, vector, trigger_mode == 0 ? HV_APIC_EDGE_TRIGGER : HV_APIC_LEVEL_TRIGGER);
+            log("apic_send_msi: hv_vm_lapic_set_intr(vcpu_id = %u, vector = 0x%x, trigger_mode = %u -> 0x%x (%s)\n",
+                vcpu_id, vector, trigger_mode, r, hvf_return_string(r));
+        }
+    }
+    /* XXX: Ignore redirection hint. */
+    //apic_deliver_irq(dest, dest_mode, delivery, vector, trigger_mode);
+}
 
 static void hvf_apic_send_msi(MSIMessage *msg)
 {
@@ -304,6 +342,9 @@ static void hvf_apic_send_msi(MSIMessage *msg)
     uint64_t msi_address = msg->address | 0xfee00000;
     log("hvf_apic_send_msi: address = 0x%llx (0x%llx), data = 0x%x\n", msi_address, msg->address, msg->data);
     assert_hvf_ok(hv_vm_lapic_msi(msi_address, msg->data));
+    
+    
+    apic_send_msi(msg);
 }
 
 static MemTxResult hvf_apic_mem_read(void *opaque, hwaddr addr, uint64_t *data,
