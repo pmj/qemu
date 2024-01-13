@@ -45,6 +45,9 @@
 #include "vmcs.h"
 #include "vmx.h"
 
+#include <os/log.h>
+#define log(fmt, ...) os_log(OS_LOG_DEFAULT, fmt, ## __VA_ARGS__ )
+
 void hvf_handle_io(CPUState *cs, uint16_t port, void *data,
                    int direction, int size, uint32_t count);
 
@@ -749,7 +752,7 @@ void simulate_rdmsr(CPUX86State *env)
         val |= ((uint32_t)cs->nr_cores << 16); /* core count, bits 31..16 */
         break;
     default:
-        fprintf(stderr, "%s[%u]: unknown msr 0x%x\n", __func__, cs->cpu_index, msr);
+        log("%s[%u]: unknown msr 0x%x\n", __func__, cs->cpu_index, msr);
         val = 0;
         break;
     }
@@ -843,7 +846,7 @@ void simulate_wrmsr(CPUX86State *env)
         env->mtrr_deftype = data;
         break;
     default:
-        fprintf(stderr, "%s[%u]: unknown msr 0x%x\n", __func__, cs->cpu_index, msr);
+        log("%s[%u]: unknown msr 0x%x\n", __func__, cs->cpu_index, msr);
         break;
     }
 
