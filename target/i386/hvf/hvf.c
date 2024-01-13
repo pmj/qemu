@@ -74,6 +74,11 @@
 #include "qemu/accel.h"
 #include "target/i386/cpu.h"
 
+#pragma mark DEBUG
+#include <os/log.h>
+#define log(fmt, ...) os_log(OS_LOG_DEFAULT, fmt, ## __VA_ARGS__ )
+#pragma mark -
+
 void vmx_update_tpr(CPUState *cpu)
 {
     /* TODO: need integrate APIC handling */
@@ -538,7 +543,7 @@ int hvf_vcpu_exec(CPUState *cpu)
 
         if (exit_info != HV_VM_EXITINFO_VMX)
         {
-            fprintf(stderr, "hvf_vcpu_exec[%u]: exit info %u\n", cpu->cpu_index, exit_info);
+            log("hvf_vcpu_exec[%u]: exit info %u\n", cpu->cpu_index, exit_info);
             hvf_apic_follow_up_exit_info(APIC_COMMON(X86_CPU(cpu)->apic_state), exit_info);
         }
 
@@ -725,7 +730,7 @@ int hvf_vcpu_exec(CPUState *cpu)
             break;
         }
         case EXIT_REASON_APIC_ACCESS: { /* TODO */
-            fprintf(stderr, "hvf_vcpu_exec[%u]: EXIT_REASON_APIC_ACCESS\n",
+            log("hvf_vcpu_exec[%u]: EXIT_REASON_APIC_ACCESS\n",
                 cpu->cpu_index);
             struct x86_decode decode;
 

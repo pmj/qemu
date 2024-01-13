@@ -39,6 +39,9 @@
 
 #ifdef CONFIG_HVF
 #include <Hypervisor/hv.h>
+#include <os/log.h>
+
+#define log(fmt, ...) os_log(OS_LOG_DEFAULT, fmt, ## __VA_ARGS__ )
 #endif
 
 #define APIC_DELIVERY_MODE_SHIFT 8
@@ -141,7 +144,7 @@ static void ioapic_service(IOAPICCommonState *s)
                     uint64_t vector = s->ioredtbl[i];
                     hv_return_t res = hv_vm_send_ioapic_intr(vector);
 
-                    fprintf(stderr, "ioapic_service, i = %u, hv_vm_send_ioapic_intr(0x%llx) -> 0x%x\n", i, vector, res);
+                    log("ioapic_service, i = %u, hv_vm_send_ioapic_intr(0x%llx) -> 0x%x\n", i, vector, res);
                 }
 #endif
 

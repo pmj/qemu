@@ -302,7 +302,7 @@ static void hvf_apic_send_msi(MSIMessage *msg)
 {
     /* hv_vm_lapic_msi() wants the full GPA, not just the offset */
     uint64_t msi_address = msg->address | 0xfee00000;
-    log("hvf_apic_send_msi: address = 0x%llx, data = 0x%x\n", msi_address, msg->data);
+    log("hvf_apic_send_msi: address = 0x%llx (0x%llx), data = 0x%x\n", msi_address, msg->address, msg->data);
     assert_hvf_ok(hv_vm_lapic_msi(msi_address, msg->data));
 }
 
@@ -349,6 +349,7 @@ static MemTxResult hvf_apic_mem_read(void *opaque, hwaddr addr, uint64_t *data,
 
     if (result == HV_SUCCESS) {
 #pragma mark DEBUG
+    /*
         if (addr == 0x300) {
             uint32_t d = read_value;
             log("hvf_apic_mem_read[%u] ICR read: vector: 0x%02x, mode: %u (%" LP "s), dest mode: %u, status: %u, init level deassert 0: %u, init level deassert 1: %u, destination type: %u (%" LP "s), reserved: 0x%x\n",
@@ -362,7 +363,7 @@ static MemTxResult hvf_apic_mem_read(void *opaque, hwaddr addr, uint64_t *data,
             (d >> 18) & 0x3, apic_dest_type_str((d >> 18) & 0x3),
             (d & ((1u << 13) | (3u << 16) | (0xfff << 20))));
 #pragma mark -
-        }
+        }*/
         return MEMTX_OK;
     } else {
 #pragma mark DEBUG
@@ -390,6 +391,7 @@ static void hvf_apic_mem_write(void *opaque, hwaddr addr,
          * Mapping them on the global bus happens to work because
          * MSI registers are reserved in APIC MMIO and vice versa. */
         MSIMessage msi = { .address = addr, .data = data };
+        log("hvf_apic_mem_write: MSI @ 0x%llx, data = 0x%llx\n", addr, data);
         hvf_apic_send_msi(&msi);
         return;
     }
@@ -405,14 +407,7 @@ static void hvf_apic_mem_write(void *opaque, hwaddr addr,
     s = APIC_COMMON(dev);
     
     cpu = CPU(s->cpu);
-    
-#pragma mark DEBUG
-    if (cpu->cpu_index != 0)
-    {
-        log("hvf_apic_mem_write apic = { id = 0x%x } addr = 0x%llx, data = 0x%llx, size = %u [APIC disabled, ignoring writes]\n", s->id, addr, data, size);
-    }
-#pragma mark -
-    
+        
     assert(qemu_in_vcpu_thread());
     
     if (!(s->apicbase & MSR_IA32_APICBASE_ENABLE)) {
@@ -437,6 +432,7 @@ static void hvf_apic_mem_write(void *opaque, hwaddr addr,
 
     vcpu = cpu->accel->fd;
 
+/*
 #pragma mark DEBUG
     bool skip_log = (addr == 0xb0);
 
@@ -448,10 +444,12 @@ static void hvf_apic_mem_write(void *opaque, hwaddr addr,
         //hvf_dump_kernel_apic_state(apic);
     }
 #pragma mark -
+*/
     
     hv_return_t result = hv_vcpu_apic_write(
         vcpu, addr, data, &no_side_effect);
 
+/*
 #pragma mark DEBUG
     if (!skip_log || result != HV_SUCCESS)
         log("hvf_apic_mem_write_job hv_vcpu_apic_write[%u](addr = 0x%llx, data = 0x%llx) -> 0x%x (%" LP "s) no_side_effect = %" LP "s\n",
@@ -459,7 +457,7 @@ static void hvf_apic_mem_write(void *opaque, hwaddr addr,
  
     if (addr == 0x300) {
         uint32_t d = data;
-        log("hvf_apic_mem_write_job[%u] ICR write: vector: 0x%02x, mode: %u (%" LP "s), dest mode: %u, status: %u, init level deassert 0: %u, init level deassert 1: %u, destination type: %u (%" LP "s), reserved: 0x%x\n",
+        log("hvf_apic_mem_write[%u] ICR write: vector: 0x%02x, mode: %u (%" LP "s), dest mode: %u, status: %u, init level deassert 0: %u, init level deassert 1: %u, destination type: %u (%" LP "s), reserved: 0x%x\n",
             cpu->cpu_index,
             d & 0xff,
             (d >> 8) & 0x7, apic_dest_mode_str((d >> 8) & 0x7),
@@ -471,29 +469,31 @@ static void hvf_apic_mem_write(void *opaque, hwaddr addr,
             (d & ((1u << 13) | (3u << 16) | (0xfff << 20))));
     }
 #pragma mark -
+*/
     
     if (!no_side_effect) {
         hv_vm_exitinfo_t exit_info = 0;
         result = hv_vcpu_exit_info(vcpu, &exit_info);
 #pragma mark DEBUG
-        log("hvf_apic_mem_write_job hv_vcpu_exit_info -> exit info: %u (%" LP "s), result: 0x%x (%" LP "s)\n", exit_info, hvf_exit_info_string(exit_info), result, hvf_return_string(result));
+        log("hvf_apic_mem_write hv_vcpu_exit_info -> exit info: %u (%" LP "s), result: 0x%x (%" LP "s)\n", exit_info, hvf_exit_info_string(exit_info), result, hvf_return_string(result));
 #pragma mark -
         hvf_apic_follow_up_exit_info(s, exit_info);
     }
 
 #pragma mark DEBUG
+    /*
     if (addr == 0x300 && ((data >> 8) & 0x7) >= 5)
     {
         log("hvf_apic_mem_write: %" LP "s to %" LP "s destination; APIC state after write:\n", apic_dest_mode_str(((data >> 8) & 0x7)), apic_dest_type_str((data >> 18) & 0x3));
         //hvf_dump_kernel_apic_state(apic);
-    }
+    }*/
     
     if (addr == 0xb0 && no_side_effect) {
         uint8_t vec = 0;
         result = hv_vcpu_exit_ioapic_eoi(vcpu, &vec);
-        log("hvf_apic_mem_write: No side effect, but write to EOI register? hv_vcpu_exit_ioapic_eoi -> result 0x%x (%s) vector 0x%x\n", result, hvf_return_string(result), vec);
         if (result == HV_SUCCESS)
         {
+            log("hvf_apic_mem_write: No side effect, but write to EOI register? hv_vcpu_exit_ioapic_eoi -> result 0x%x (%s) vector 0x%x\n", result, hvf_return_string(result), vec);
             ioapic_eoi_broadcast(vec);
         } else {
             //log("hv_vcpu_exit_ioapic_eoi -> 0x%x (%s), vector = 0x%x\n", result, hvf_return_string(result), vec);
