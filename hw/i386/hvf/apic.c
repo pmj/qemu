@@ -340,11 +340,11 @@ static void hvf_apic_send_msi(MSIMessage *msg)
 {
     /* hv_vm_lapic_msi() wants the full GPA, not just the offset */
     uint64_t msi_address = msg->address | 0xfee00000;
-    log("hvf_apic_send_msi: address = 0x%llx (0x%llx), data = 0x%x\n", msi_address, msg->address, msg->data);
+    //log("hvf_apic_send_msi: address = 0x%llx (0x%llx), data = 0x%x\n", msi_address, msg->address, msg->data);
     assert_hvf_ok(hv_vm_lapic_msi(msi_address, msg->data));
     
     
-    apic_send_msi(msg);
+    //apic_send_msi(msg);
 }
 
 static MemTxResult hvf_apic_mem_read(void *opaque, hwaddr addr, uint64_t *data,
@@ -432,7 +432,7 @@ static void hvf_apic_mem_write(void *opaque, hwaddr addr,
          * Mapping them on the global bus happens to work because
          * MSI registers are reserved in APIC MMIO and vice versa. */
         MSIMessage msi = { .address = addr, .data = data };
-        log("hvf_apic_mem_write: MSI @ 0x%llx, data = 0x%llx\n", addr, data);
+        //log("hvf_apic_mem_write: MSI @ 0x%llx, data = 0x%llx\n", addr, data);
         hvf_apic_send_msi(&msi);
         return;
     }
@@ -535,7 +535,7 @@ static void hvf_apic_mem_write(void *opaque, hwaddr addr,
         if (result == HV_SUCCESS)
         {
             log("hvf_apic_mem_write: No side effect, but write to EOI register? hv_vcpu_exit_ioapic_eoi -> result 0x%x (%s) vector 0x%x\n", result, hvf_return_string(result), vec);
-            ioapic_eoi_broadcast(vec);
+            //ioapic_eoi_broadcast(vec);
         } else {
             //log("hv_vcpu_exit_ioapic_eoi -> 0x%x (%s), vector = 0x%x\n", result, hvf_return_string(result), vec);
         }

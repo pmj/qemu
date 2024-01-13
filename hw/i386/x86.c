@@ -646,6 +646,8 @@ void ioapic_init_gsi(GSIState *gsi_state, const char *parent_name)
     assert(parent_name);
     if (kvm_ioapic_in_kernel()) {
         dev = qdev_new(TYPE_KVM_IOAPIC);
+    } if (hvf_irqchip_in_kernel()) {
+        dev = qdev_new(TYPE_HVF_IOAPIC);
     } else {
         dev = qdev_new(TYPE_IOAPIC);
     }
