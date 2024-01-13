@@ -582,11 +582,19 @@ int hvf_vcpu_exec(CPUState *cpu)
             slot = hvf_find_overlap_slot(gpa, 1);
             /* mmio */
             if (ept_emulation_fault(slot, gpa, exit_qual)) {
+                bool drop_lock = (gpa >= 0xfee00020 && gpa <= 0xfee003e0);
+                if (drop_lock) {
+                    qemu_mutex_unlock_iothread();
+                }
+
                 struct x86_decode decode;
 
                 load_regs(cpu);
                 decode_instruction(env, &decode);
                 exec_instruction(env, &decode);
+                if (drop_lock) {
+                    qemu_mutex_lock_iothread();
+                }
                 store_regs(cpu);
                 break;
             }
