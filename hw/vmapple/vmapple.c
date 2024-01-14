@@ -18,7 +18,6 @@
 #include "qemu/units.h"
 #include "qemu/option.h"
 #include "monitor/qdev.h"
-#include "qapi/error.h"
 #include "hw/sysbus.h"
 #include "hw/arm/boot.h"
 #include "hw/arm/primecell.h"
@@ -30,6 +29,7 @@
 #include "sysemu/hvf.h"
 #include "hw/loader.h"
 #include "qapi/error.h"
+#include "qapi/qmp/qlist.h"
 #include "qemu/bitops.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
@@ -259,6 +259,7 @@ static void create_gic(VMAppleMachineState *vms, MemoryRegion *mem)
     MachineState *ms = MACHINE(vms);
     /* We create a standalone GIC */
     SysBusDevice *gicbusdev;
+    QList *redist_region_count;
     int i;
     unsigned int smp_cpus = ms->smp.cpus;
 
@@ -275,8 +276,9 @@ static void create_gic(VMAppleMachineState *vms, MemoryRegion *mem)
                 vms->memmap[VMAPPLE_GIC_REDIST].size / GICV3_REDIST_SIZE;
     uint32_t redist0_count = MIN(smp_cpus, redist0_capacity);
 
-    qdev_prop_set_uint32(vms->gic, "len-redist-region-count", 1);
-    qdev_prop_set_uint32(vms->gic, "redist-region-count[0]", redist0_count);
+    redist_region_count = qlist_new();
+    qlist_append_int(redist_region_count, redist0_count);
+    qdev_prop_set_array(vms->gic, "redist-region-count", redist_region_count);
 
     gicbusdev = SYS_BUS_DEVICE(vms->gic);
     sysbus_realize_and_unref(gicbusdev, &error_fatal);
