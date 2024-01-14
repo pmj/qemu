@@ -345,26 +345,8 @@ static void apple_gfx_init(Object *obj)
     sysbus_init_irq(SYS_BUS_DEVICE(s), &s->irq_iosfc);
 }
 
-static void apple_gfx_realize(DeviceState *dev, Error **errp)
+static void apple_gfx_register_task_memory_mapping_handlers(AppleGFXState *s, PGDeviceDescriptor *desc)
 {
-    @autoreleasepool {
-    AppleGFXState *s = APPLE_GFX(dev);
-    PGDeviceDescriptor *desc = [PGDeviceDescriptor new];
-    PGDisplayDescriptor *disp_desc = [PGDisplayDescriptor new];
-    PGIOSurfaceHostDeviceDescriptor *iosfc_desc = [PGIOSurfaceHostDeviceDescriptor new];
-    PGDisplayMode *modes[ARRAY_SIZE(apple_gfx_modes)];
-    int i;
-
-    for (i = 0; i < ARRAY_SIZE(apple_gfx_modes); i++) {
-        modes[i] =
-            [[PGDisplayMode alloc] initWithSizeInPixels:apple_gfx_modes[i] refreshRateInHz:60.];
-    }
-
-    s->mtl = MTLCreateSystemDefaultDevice();
-
-    desc.device = s->mtl;
-    desc.usingIOSurfaceMapper = true;
-
     desc.createTask = ^(uint64_t vmSize, void * _Nullable * _Nonnull baseAddress) {
         AppleGFXTask *task = apple_gfx_new_task(s, vmSize);
         *baseAddress = (void*)task->address;
@@ -438,23 +420,11 @@ static void apple_gfx_realize(DeviceState *dev, Error **errp)
         return (bool)true;
     };
 
-    desc.raiseInterrupt = ^(uint32_t vector) {
-        bool locked;
+}
 
-        trace_apple_gfx_raise_irq(vector);
-        locked = qemu_mutex_iothread_locked();
-        if (!locked) {
-            qemu_mutex_lock_iothread();
-        }
-        qemu_irq_pulse(s->irq_gfx);
-        if (!locked) {
-            qemu_mutex_unlock_iothread();
-        }
-    };
-
-    s->pgdev = PGNewDeviceWithDescriptor(desc);
-    [desc release];
-    desc = nil;
+static PGDisplayDescriptor *apple_gfx_prepare_display_handlers(AppleGFXState *s)
+{
+    PGDisplayDescriptor *disp_desc = [PGDisplayDescriptor new];
 
     disp_desc.name = @"QEMU display";
     disp_desc.sizeInMillimeters = NSMakeSize(400., 300.); /* A 20" display */
@@ -500,15 +470,35 @@ static void apple_gfx_realize(DeviceState *dev, Error **errp)
         update_cursor(s);
     };
 
-    s->pgdisp = [s->pgdev newDisplayWithDescriptor:disp_desc port:0 serialNum:1234];
-    [disp_desc release];
-    s->pgdisp.modeList = [NSArray arrayWithObjects:modes count:ARRAY_SIZE(apple_gfx_modes)];
+    return disp_desc;
+}
+
+static NSArray<PGDisplayMode*>* apple_gfx_prepare_display_mode_array(void)
+{
+    PGDisplayMode *modes[ARRAY_SIZE(apple_gfx_modes)];
+    NSArray<PGDisplayMode*>* mode_array = nil;
+    int i;
+
     
+    for (i = 0; i < ARRAY_SIZE(apple_gfx_modes); i++) {
+        modes[i] =
+            [[PGDisplayMode alloc] initWithSizeInPixels:apple_gfx_modes[i] refreshRateInHz:60.];
+    }
+
+    mode_array = [NSArray arrayWithObjects:modes count:ARRAY_SIZE(apple_gfx_modes)];
+
     for (i = 0; i < ARRAY_SIZE(apple_gfx_modes); i++) {
         [modes[i] release];
         modes[i] = nil;
     }
+    
+    return mode_array;
+}
 
+static PGIOSurfaceHostDevice *apple_gfx_prepare_iosurface_host_device(AppleGFXState *s)
+{
+    PGIOSurfaceHostDeviceDescriptor *iosfc_desc = [PGIOSurfaceHostDeviceDescriptor new];
+    PGIOSurfaceHostDevice *iosfc_host_dev = nil;
 
     iosfc_desc.mapMemory = ^(uint64_t phys, uint64_t len, bool ro, void **va, void *e, void *f) {
         trace_apple_iosfc_map_memory(phys, len, ro, va, e, f);
@@ -535,13 +525,52 @@ static void apple_gfx_realize(DeviceState *dev, Error **errp)
         return (bool)true;
     };
 
-    s->pgiosfc =
-        [[PGIOSurfaceHostDevice alloc] initWithDescriptor:iosfc_desc];
+    iosfc_host_dev = [[PGIOSurfaceHostDevice alloc] initWithDescriptor:iosfc_desc];
     [iosfc_desc release];
+    return iosfc_host_dev;
+}
 
-    QTAILQ_INIT(&s->tasks);
+static void apple_gfx_realize(DeviceState *dev, Error **errp)
+{
+    @autoreleasepool {
+        AppleGFXState *s = APPLE_GFX(dev);
+        PGDeviceDescriptor *desc = [PGDeviceDescriptor new];
+        PGDisplayDescriptor *disp_desc = nil;
 
-    create_fb(s);
+        QTAILQ_INIT(&s->tasks);
+        s->mtl = MTLCreateSystemDefaultDevice();
+
+        desc.device = s->mtl;
+        desc.usingIOSurfaceMapper = true;
+
+        apple_gfx_register_task_memory_mapping_handlers(s, desc);
+        
+        desc.raiseInterrupt = ^(uint32_t vector) {
+            bool locked;
+
+            trace_apple_gfx_raise_irq(vector);
+            locked = qemu_mutex_iothread_locked();
+            if (!locked) {
+                qemu_mutex_lock_iothread();
+            }
+            qemu_irq_pulse(s->irq_gfx);
+            if (!locked) {
+                qemu_mutex_unlock_iothread();
+            }
+        };
+
+        s->pgdev = PGNewDeviceWithDescriptor(desc);
+        [desc release];
+        desc = nil;
+
+        disp_desc = apple_gfx_prepare_display_handlers(s);
+        s->pgdisp = [s->pgdev newDisplayWithDescriptor:disp_desc port:0 serialNum:1234];
+        [disp_desc release];
+        s->pgdisp.modeList = apple_gfx_prepare_display_mode_array();
+
+        s->pgiosfc = apple_gfx_prepare_iosurface_host_device(s);
+
+        create_fb(s);
     }
 }
 
