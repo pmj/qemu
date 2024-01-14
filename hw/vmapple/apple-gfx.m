@@ -70,13 +70,13 @@ typedef bool(^IOSFCMapMemory)(uint64_t phys, uint64_t len, bool ro, void **va, v
 -(void)mmioWriteAtOffset:(size_t) offset value:(uint32_t)value;
 @end
 
-typedef struct AppleGFXTask {
-    QTAILQ_ENTRY(AppleGFXTask) node;
+typedef struct PGTask_s { // Name matches forward declaration in PG header
+    QTAILQ_ENTRY(PGTask_s) node;
     mach_vm_address_t address;
     uint64_t len;
 } AppleGFXTask;
 
-typedef QTAILQ_HEAD(, AppleGFXTask) AppleGFXTaskList;
+typedef QTAILQ_HEAD(, PGTask_s) AppleGFXTaskList;
 
 typedef struct AppleGFXState {
     /* Private */
@@ -367,20 +367,18 @@ static void apple_gfx_realize(DeviceState *dev, Error **errp)
         AppleGFXTask *task = apple_gfx_new_task(s, vmSize);
         *baseAddress = (void*)task->address;
         trace_apple_gfx_create_task(vmSize, *baseAddress);
-        return (PGTask_t *)task;
+        return task;
     };
 
-    desc.destroyTask = ^(PGTask_t * _Nonnull _task) {
+    desc.destroyTask = ^(AppleGFXTask * _Nonnull task) {
 				assert_thread_safety();
-        AppleGFXTask *task = (AppleGFXTask *)_task;
         trace_apple_gfx_destroy_task(task);
         QTAILQ_REMOVE(&s->tasks, task, node);
         mach_vm_deallocate(mach_task_self(), task->address, task->len);
         g_free(task);
     };
 
-    desc.mapMemory = ^(PGTask_t * _Nonnull _task, uint32_t rangeCount, uint64_t virtualOffset, bool readOnly, PGPhysicalMemoryRange_t * _Nonnull ranges) {
-        AppleGFXTask *task = (AppleGFXTask*)_task;
+    desc.mapMemory = ^(AppleGFXTask * _Nonnull task, uint32_t rangeCount, uint64_t virtualOffset, bool readOnly, PGPhysicalMemoryRange_t * _Nonnull ranges) {
         kern_return_t r;
         mach_vm_address_t target, source;
         trace_apple_gfx_map_memory(task, rangeCount, virtualOffset, readOnly);
@@ -416,9 +414,8 @@ static void apple_gfx_realize(DeviceState *dev, Error **errp)
         return (bool)true;
     };
 
-    desc.unmapMemory = ^(PGTask_t * _Nonnull _task, uint64_t virtualOffset, uint64_t length) {
-			assert_thread_safety();
-        AppleGFXTask *task = (AppleGFXTask *)_task;
+    desc.unmapMemory = ^(AppleGFXTask * _Nonnull task, uint64_t virtualOffset, uint64_t length) {
+        assert_thread_safety();
         kern_return_t r;
         mach_vm_address_t range_address;
 
