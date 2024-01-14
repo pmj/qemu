@@ -209,54 +209,56 @@ static void apple_gfx_fb_update_display(void *opaque)
         return;
     }
 
-    s->new_frame = false;
+    @autoreleasepool {
+        s->new_frame = false;
 
-    BOOL r;
-    uint32_t width = surface_width(s->surface);
-    uint32_t height = surface_height(s->surface);
-    MTLRegion region = MTLRegionMake2D(0, 0, width, height);
-    id<MTLCommandQueue> commandQueue = [s->mtl newCommandQueue];
-    id<MTLCommandBuffer> mipmapCommandBuffer = [commandQueue commandBuffer];
+        BOOL r;
+        uint32_t width = surface_width(s->surface);
+        uint32_t height = surface_height(s->surface);
+        MTLRegion region = MTLRegionMake2D(0, 0, width, height);
+        id<MTLCommandQueue> commandQueue = [s->mtl newCommandQueue];
+        id<MTLCommandBuffer> mipmapCommandBuffer = [commandQueue commandBuffer];
 
-    r = [s->pgdisp encodeCurrentFrameToCommandBuffer:mipmapCommandBuffer
-                                             texture:s->texture
-                                              region:region];
+        r = [s->pgdisp encodeCurrentFrameToCommandBuffer:mipmapCommandBuffer
+                                                 texture:s->texture
+                                                  region:region];
 
-    if (r != YES) {
-        return;
+        if (r != YES) {
+            return;
+        }
+
+        id<MTLBlitCommandEncoder> blitCommandEncoder = [mipmapCommandBuffer blitCommandEncoder];
+        [blitCommandEncoder endEncoding];
+        [mipmapCommandBuffer commit];
+        [mipmapCommandBuffer waitUntilCompleted];
+        [s->texture getBytes:s->vram bytesPerRow:(width * 4)
+                                     bytesPerImage: (width * height * 4)
+                                     fromRegion: region
+                                     mipmapLevel: 0
+                                     slice: 0];
+
+        /* Need to render cursor manually if not supported by backend */
+        if (!dpy_cursor_define_supported(s->con) && s->cursor && s->cursor_show) {
+            pixman_image_t *image =
+                pixman_image_create_bits(PIXMAN_a8r8g8b8,
+                                         s->cursor->width,
+                                         s->cursor->height,
+                                         (uint32_t *)s->cursor->data,
+                                         s->cursor->width * 4);
+
+            pixman_image_composite(PIXMAN_OP_OVER,
+                                   image, NULL, s->surface->image,
+                                   0, 0, 0, 0, s->pgdisp.cursorPosition.x,
+                                   s->pgdisp.cursorPosition.y, s->cursor->width,
+                                   s->cursor->height);
+
+            pixman_image_unref(image);
+        }
+
+        dpy_gfx_update_full(s->con);
+
+        [commandQueue release];
     }
-
-    id<MTLBlitCommandEncoder> blitCommandEncoder = [mipmapCommandBuffer blitCommandEncoder];
-    [blitCommandEncoder endEncoding];
-    [mipmapCommandBuffer commit];
-    [mipmapCommandBuffer waitUntilCompleted];
-    [s->texture getBytes:s->vram bytesPerRow:(width * 4)
-                                 bytesPerImage: (width * height * 4)
-                                 fromRegion: region
-                                 mipmapLevel: 0
-                                 slice: 0];
-
-    /* Need to render cursor manually if not supported by backend */
-    if (!dpy_cursor_define_supported(s->con) && s->cursor && s->cursor_show) {
-        pixman_image_t *image =
-            pixman_image_create_bits(PIXMAN_a8r8g8b8,
-                                     s->cursor->width,
-                                     s->cursor->height,
-                                     (uint32_t *)s->cursor->data,
-                                     s->cursor->width * 4);
-
-        pixman_image_composite(PIXMAN_OP_OVER,
-                               image, NULL, s->surface->image,
-                               0, 0, 0, 0, s->pgdisp.cursorPosition.x,
-                               s->pgdisp.cursorPosition.y, s->cursor->width,
-                               s->cursor->height);
-
-        pixman_image_unref(image);
-    }
-
-    dpy_gfx_update_full(s->con);
-
-    [commandQueue release];
 }
 
 static const GraphicHwOps apple_gfx_fb_ops = {
@@ -345,6 +347,7 @@ static void apple_gfx_init(Object *obj)
 
 static void apple_gfx_realize(DeviceState *dev, Error **errp)
 {
+    @autoreleasepool {
     AppleGFXState *s = APPLE_GFX(dev);
     PGDeviceDescriptor *desc = [PGDeviceDescriptor new];
     PGDisplayDescriptor *disp_desc = [PGDisplayDescriptor new];
@@ -531,6 +534,7 @@ static void apple_gfx_realize(DeviceState *dev, Error **errp)
     QTAILQ_INIT(&s->tasks);
 
     create_fb(s);
+    }
 }
 
 static void apple_gfx_class_init(ObjectClass *klass, void *data)
