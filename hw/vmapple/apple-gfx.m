@@ -306,35 +306,46 @@ static void update_cursor(AppleGFXState *s)
 
 static void set_mode(AppleGFXState *s, uint32_t width, uint32_t height)
 {
-    //assert(qemu_mutex_iothread_locked());
-    void *vram = g_malloc0(width * height * 4);
+    void *vram = NULL;
     void *old_vram = s->vram;
     DisplaySurface *surface;
     MTLTextureDescriptor *textureDescriptor;
-    id<MTLTexture> old_texture = s->texture;
+    id<MTLTexture> old_texture = nil;
+    id<MTLTexture> texture = nil;
 
+    qemu_mutex_lock_iothread();
     if (s->surface &&
         width == surface_width(s->surface) &&
         height == surface_height(s->surface)) {
+        qemu_mutex_unlock_iothread();
         return;
     }
+    qemu_mutex_unlock_iothread();
+
+    vram = g_malloc0(width * height * 4);
     surface = qemu_create_displaysurface_from(width, height, PIXMAN_LE_a8r8g8b8,
                                               width * 4, vram);
+    
+    @autoreleasepool {
+        textureDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                         width:width
+                                        height:height
+                                     mipmapped:NO];
+        textureDescriptor.usage = s->pgdisp.minimumTextureUsage;
+        texture = [s->mtl newTextureWithDescriptor:textureDescriptor];
+    }
+    
+    qemu_mutex_lock_iothread();
+    old_vram = s->vram;
+    s->vram = vram;
     s->surface = surface;
     dpy_gfx_replace_surface(s->con, surface);
-    s->vram = vram;
+    old_texture = s->texture;
+    s->texture = texture;
+    qemu_mutex_unlock_iothread();
+    
     g_free(old_vram);
-
-    textureDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
-                                              width:width
-                                              height:height
-                                              mipmapped:NO];
-    textureDescriptor.usage = s->pgdisp.minimumTextureUsage;
-    s->texture = [s->mtl newTextureWithDescriptor:textureDescriptor];
-
-    if (old_texture) {
-        [old_texture release];
-    }
+    [old_texture release];
 }
 
 static void create_fb(AppleGFXState *s)
