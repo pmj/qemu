@@ -65,7 +65,7 @@ typedef bool(^IOSFCMapMemory)(uint64_t phys, uint64_t len, bool ro, void **va, v
 @end
 
 @interface PGIOSurfaceHostDevice : NSObject
--(void)initWithDescriptor:(PGIOSurfaceHostDeviceDescriptor *) desc;
+-(instancetype)initWithDescriptor:(PGIOSurfaceHostDeviceDescriptor *) desc;
 -(uint32_t)mmioReadAtOffset:(size_t) offset;
 -(void)mmioWriteAtOffset:(size_t) offset value:(uint32_t)value;
 @end
@@ -357,8 +357,8 @@ static void apple_gfx_realize(DeviceState *dev, Error **errp)
     int i;
 
     for (i = 0; i < ARRAY_SIZE(apple_gfx_modes); i++) {
-        modes[i] = [PGDisplayMode new];
-        [modes[i] initWithSizeInPixels:apple_gfx_modes[i] refreshRateInHz:60.];
+        modes[i] =
+            [[PGDisplayMode alloc] initWithSizeInPixels:apple_gfx_modes[i] refreshRateInHz:60.];
     }
 
     s->mtl = MTLCreateSystemDefaultDevice();
@@ -454,6 +454,8 @@ static void apple_gfx_realize(DeviceState *dev, Error **errp)
     };
 
     s->pgdev = PGNewDeviceWithDescriptor(desc);
+    [desc release];
+    desc = nil;
 
     disp_desc.name = @"QEMU display";
     disp_desc.sizeInMillimeters = NSMakeSize(400., 300.); /* A 20" display */
@@ -500,9 +502,15 @@ static void apple_gfx_realize(DeviceState *dev, Error **errp)
     };
 
     s->pgdisp = [s->pgdev newDisplayWithDescriptor:disp_desc port:0 serialNum:1234];
+    [disp_desc release];
     s->pgdisp.modeList = [NSArray arrayWithObjects:modes count:ARRAY_SIZE(apple_gfx_modes)];
+    
+    for (i = 0; i < ARRAY_SIZE(apple_gfx_modes); i++) {
+        [modes[i] release];
+        modes[i] = nil;
+    }
 
-    [iosfc_desc init];
+
     iosfc_desc.mapMemory = ^(uint64_t phys, uint64_t len, bool ro, void **va, void *e, void *f) {
         trace_apple_iosfc_map_memory(phys, len, ro, va, e, f);
         MemoryRegion *tmp_mr;
@@ -528,8 +536,9 @@ static void apple_gfx_realize(DeviceState *dev, Error **errp)
         return (bool)true;
     };
 
-    s->pgiosfc = [PGIOSurfaceHostDevice new];
-    [s->pgiosfc initWithDescriptor:iosfc_desc];
+    s->pgiosfc =
+        [[PGIOSurfaceHostDevice alloc] initWithDescriptor:iosfc_desc];
+    [iosfc_desc release];
 
     QTAILQ_INIT(&s->tasks);
 
