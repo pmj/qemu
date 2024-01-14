@@ -51,6 +51,7 @@
 #include "hw/vmapple/cfg.h"
 #include "hw/misc/pvpanic.h"
 #include "hw/vmapple/bdif.h"
+#include "apple-gfx.h"
 
 struct VMAppleMachineClass {
     MachineClass parent;
@@ -229,7 +230,7 @@ static void create_gfx(VMAppleMachineState *vms, MemoryRegion *mem)
     int irq_iosfc = vms->irqmap[VMAPPLE_APV_IOSFC];
     SysBusDevice *aes;
 
-    aes = SYS_BUS_DEVICE(qdev_new("apple-gfx"));
+    aes = SYS_BUS_DEVICE(qdev_new(TYPE_APPLE_GFX_VMAPPLE));
     sysbus_mmio_map(aes, 0, vms->memmap[VMAPPLE_APV_GFX].base);
     sysbus_mmio_map(aes, 1, vms->memmap[VMAPPLE_APV_IOSFC].base);
     sysbus_connect_irq(aes, 0, qdev_get_gpio_in(vms->gic, irq_gfx));

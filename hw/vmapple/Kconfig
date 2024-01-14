@@ -9,6 +9,12 @@ config VMAPPLE_CFG
 
 config VMAPPLE_PVG
     bool
+    depends on MAC_PVG
+
+config MAC_PVG
+    bool
+    depends on AARCH64 || X86_64
+    default y
 
 config VMAPPLE_VIRTIO_BLK
     bool
