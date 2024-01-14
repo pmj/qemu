@@ -150,7 +150,7 @@ static void apple_gfx_write(void *opaque, hwaddr offset, uint64_t val, unsigned 
 static const MemoryRegionOps apple_gfx_ops = {
     .read = apple_gfx_read,
     .write = apple_gfx_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
         .min_access_size = 4,
         .max_access_size = 8,
