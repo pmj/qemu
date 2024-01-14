@@ -31,3 +31,4 @@ config VMAPPLE
     select VMAPPLE_BDIF
     select VMAPPLE_CFG
     select VMAPPLE_PVG
+    select VMAPPLE_VIRTIO_BLK
