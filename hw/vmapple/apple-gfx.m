@@ -24,6 +24,7 @@
 #include "sysemu/cpus.h"
 #include "ui/console.h"
 #include "monitor/monitor.h"
+#include <mach/mach_vm.h>
 #import <ParavirtualizedGraphics/ParavirtualizedGraphics.h>
 
 #define TYPE_APPLE_GFX          "apple-gfx"
@@ -41,13 +42,6 @@ static void print_queue_labels()
 	fprintf(stderr, "pg_task_q: '%s' (%p), current: '%s' (%p), default: '%s' (%p)\n", dispatch_queue_get_label(pg_task_q), pg_task_q, dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL), dispatch_get_current_queue(), dispatch_queue_get_label(dq), dq);
 }
 
-
-/*
- * We have to map PVG memory into our address space. Use the one below
- * as base start address. In normal linker setups it points to a free
- * memory range.
- */
-#define APPLE_GFX_BASE_VA ((void *)(uintptr_t)0x500000000000UL)
 #define assert_thread_safety() ({ if (pg_task_q) { if (pg_task_q != dispatch_get_current_queue()) { print_queue_labels(); } } else { pg_task_q = dispatch_get_current_queue(); } })
 
 /*
@@ -76,18 +70,9 @@ typedef bool(^IOSFCMapMemory)(uint64_t phys, uint64_t len, bool ro, void **va, v
 -(void)mmioWriteAtOffset:(size_t) offset value:(uint32_t)value;
 @end
 
-typedef struct AppleGFXMR {
-    QTAILQ_ENTRY(AppleGFXMR) node;
-    hwaddr pa;
-    void *va;
-    uint64_t len;
-} AppleGFXMR;
-
-typedef QTAILQ_HEAD(, AppleGFXMR) AppleGFXMRList;
-
 typedef struct AppleGFXTask {
     QTAILQ_ENTRY(AppleGFXTask) node;
-    void *mem;
+    mach_vm_address_t address;
     uint64_t len;
 } AppleGFXTask;
 
@@ -105,7 +90,6 @@ typedef struct AppleGFXState {
     id<PGDevice> pgdev;
     id<PGDisplay> pgdisp;
     PGIOSurfaceHostDevice *pgiosfc;
-    AppleGFXMRList mrs;
     AppleGFXTaskList tasks;
     QemuConsole *con;
     void *vram;
@@ -124,36 +108,22 @@ OBJECT_DECLARE_SIMPLE_TYPE(AppleGFXState, APPLE_GFX)
 static AppleGFXTask *apple_gfx_new_task(AppleGFXState *s, uint64_t len)
 {
     assert_thread_safety();
-    void *base = APPLE_GFX_BASE_VA;
+    mach_vm_address_t task_mem;
     AppleGFXTask *task;
+    kern_return_t r;
 
-    QTAILQ_FOREACH(task, &s->tasks, node) {
-        if ((task->mem + task->len) > base) {
-            base = task->mem + task->len;
-        }
+    r = mach_vm_allocate(mach_task_self(), &task_mem, len, VM_FLAGS_ANYWHERE);
+    if (r != KERN_SUCCESS || task_mem == 0) {
+        return NULL;
     }
 
     task = g_new0(AppleGFXTask, 1);
-
+    
+    task->address = task_mem;
     task->len = len;
-    task->mem = base;
     QTAILQ_INSERT_TAIL(&s->tasks, task, node);
 
     return task;
-}
-
-static AppleGFXMR *apple_gfx_mapMemory(AppleGFXState *s, AppleGFXTask *task,
-                                       uint64_t voff, uint64_t phys, uint64_t len)
-{
-    assert_thread_safety();
-    AppleGFXMR *mr = g_new0(AppleGFXMR, 1);
-
-    mr->pa = phys;
-    mr->len = len;
-    mr->va = task->mem + voff;
-    QTAILQ_INSERT_TAIL(&s->mrs, mr, node);
-
-    return mr;
 }
 
 static uint64_t apple_gfx_read(void *opaque, hwaddr offset, unsigned size)
@@ -395,7 +365,7 @@ static void apple_gfx_realize(DeviceState *dev, Error **errp)
 
     desc.createTask = ^(uint64_t vmSize, void * _Nullable * _Nonnull baseAddress) {
         AppleGFXTask *task = apple_gfx_new_task(s, vmSize);
-        *baseAddress = task->mem;
+        *baseAddress = (void*)task->address;
         trace_apple_gfx_create_task(vmSize, *baseAddress);
         return (PGTask_t *)task;
     };
@@ -405,40 +375,43 @@ static void apple_gfx_realize(DeviceState *dev, Error **errp)
         AppleGFXTask *task = (AppleGFXTask *)_task;
         trace_apple_gfx_destroy_task(task);
         QTAILQ_REMOVE(&s->tasks, task, node);
+        mach_vm_deallocate(mach_task_self(), task->address, task->len);
         g_free(task);
     };
 
     desc.mapMemory = ^(PGTask_t * _Nonnull _task, uint32_t rangeCount, uint64_t virtualOffset, bool readOnly, PGPhysicalMemoryRange_t * _Nonnull ranges) {
         AppleGFXTask *task = (AppleGFXTask*)_task;
-       mach_port_t mtask = mach_task_self();
+        kern_return_t r;
+        mach_vm_address_t target, source;
         trace_apple_gfx_map_memory(task, rangeCount, virtualOffset, readOnly);
         for (int i = 0; i < rangeCount; i++) {
             PGPhysicalMemoryRange_t *range = &ranges[i];
             MemoryRegion *tmp_mr;
             /* TODO: Bounds checks? r/o? */
             qemu_mutex_lock_iothread();
-            AppleGFXMR *mr = apple_gfx_mapMemory(s, task, virtualOffset,
-                                                 range->physicalAddress,
-                                                 range->physicalLength);
 
-            trace_apple_gfx_map_memory_range(i, range->physicalAddress, range->physicalLength, mr->va);
+            trace_apple_gfx_map_memory_range(i, range->physicalAddress, range->physicalLength, NULL);
 
-            vm_address_t target = (vm_address_t)mr->va;
-            uint64_t mask = 0;
-            bool anywhere = false;
-            vm_address_t source = (vm_address_t)gpa2hva(&tmp_mr, mr->pa, mr->len, NULL);
+            target = task->address + virtualOffset;
+            source = (mach_vm_address_t)gpa2hva(&tmp_mr,
+                                                range->physicalAddress,
+                                                range->physicalLength, NULL);
             vm_prot_t cur_protection = 0;
             vm_prot_t max_protection = 0;
-            kern_return_t retval = vm_remap(mtask, &target, mr->len, mask,
-                                            anywhere, mtask, source, false,
-                                            &cur_protection, &max_protection,
-                                            VM_INHERIT_DEFAULT);
-            trace_apple_gfx_remap(retval, source, target);
-            g_assert(retval == KERN_SUCCESS);
+            // Map guest RAM at range->physicalAddress into PG task memory range
+            r = mach_vm_remap(mach_task_self(),
+                              &target, range->physicalLength, vm_page_size - 1,
+                              VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE,
+                              mach_task_self(),
+                              source, false /* shared mapping, no copy */,
+                              &cur_protection, &max_protection,
+                              VM_INHERIT_COPY);
+            trace_apple_gfx_remap(r, source, target);
+            g_assert(r == KERN_SUCCESS);
 
             qemu_mutex_unlock_iothread();
 
-            virtualOffset += mr->len;
+            virtualOffset += range->physicalLength;
         }
         return (bool)true;
     };
@@ -446,20 +419,17 @@ static void apple_gfx_realize(DeviceState *dev, Error **errp)
     desc.unmapMemory = ^(PGTask_t * _Nonnull _task, uint64_t virtualOffset, uint64_t length) {
 			assert_thread_safety();
         AppleGFXTask *task = (AppleGFXTask *)_task;
-        AppleGFXMR *mr, *next;
+        kern_return_t r;
+        mach_vm_address_t range_address;
 
         trace_apple_gfx_unmap_memory(task, virtualOffset, length);
-        qemu_mutex_lock_iothread();
-        QTAILQ_FOREACH_SAFE(mr, &s->mrs, node, next) {
-            if (mr->va >= (task->mem + virtualOffset) &&
-                (mr->va + mr->len) <= (task->mem + virtualOffset + length)) {
-                vm_address_t addr = (vm_address_t)mr->va;
-                vm_deallocate(mach_task_self(), addr, mr->len);
-                QTAILQ_REMOVE(&s->mrs, mr, node);
-                g_free(mr);
-            }
-        }
-        qemu_mutex_unlock_iothread();
+        
+        // Replace task memory range with fresh pages, undoing the mapping from guest RAM
+        range_address = task->address + virtualOffset;
+        r = mach_vm_allocate(mach_task_self(), &range_address, length,
+                             VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE);
+        g_assert(r == KERN_SUCCESS);
+        
         return (bool)true;
     };
 
@@ -561,7 +531,6 @@ static void apple_gfx_realize(DeviceState *dev, Error **errp)
     s->pgiosfc = [PGIOSurfaceHostDevice new];
     [s->pgiosfc initWithDescriptor:iosfc_desc];
 
-    QTAILQ_INIT(&s->mrs);
     QTAILQ_INIT(&s->tasks);
 
     create_fb(s);
