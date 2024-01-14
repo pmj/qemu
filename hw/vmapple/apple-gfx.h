@@ -19,14 +19,21 @@ typedef struct AppleGFXState {
     id<PGDisplay> pgdisp;
     AppleGFXTaskList tasks;
     QemuConsole *con;
-    void *vram;
     id<MTLDevice> mtl;
-    id<MTLTexture> texture;
+    id<MTLCommandQueue> mtl_queue;
     bool handles_frames;
     bool new_frame;
     bool cursor_show;
-    DisplaySurface *surface;
     QEMUCursor *cursor;
+    
+    dispatch_queue_t render_queue;
+    /* The following fields should only be accessed from render_queue: */
+    bool gfx_update_requested;
+    bool new_frame_ready;
+    int32_t pending_frames;
+    void *vram;
+    DisplaySurface *surface;
+    id<MTLTexture> texture;
 } AppleGFXState;
 
 

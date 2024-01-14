@@ -122,43 +122,61 @@ static MemoryRegionOps apple_gfx_ops = {
     },
 };
 
-static void apple_gfx_fb_update_display(void *opaque)
+static void apple_gfx_render_frame_completed(AppleGFXState *s, void *vram, id<MTLTexture> texture);
+static void apple_gfx_render_new_frame(AppleGFXState *s)
 {
-    assert(qemu_mutex_iothread_locked());
-    AppleGFXState *s = opaque;
-
-    if (!s->new_frame || !s->handles_frames) {
+    BOOL r;
+    void *vram = s->vram;
+    uint32_t width = surface_width(s->surface);
+    uint32_t height = surface_height(s->surface);
+    MTLRegion region = MTLRegionMake2D(0, 0, width, height);
+    id<MTLCommandBuffer> command_buffer = [s->mtl_queue commandBuffer];
+    id<MTLTexture> texture = s->texture;
+    r = [s->pgdisp encodeCurrentFrameToCommandBuffer:command_buffer
+                                             texture:texture
+                                              region:region];
+    if (!r) {
         return;
     }
+    [texture retain];
+    
+    [command_buffer retain];
+    [command_buffer addCompletedHandler:
+        ^(id<MTLCommandBuffer> cb)
+        {
+            dispatch_async(s->render_queue, ^{
+                apple_gfx_render_frame_completed(s, vram, texture);
+                [texture release];
+            });
+            [command_buffer release];
+        }];
+    [command_buffer commit];
+}
 
-    @autoreleasepool {
-        s->new_frame = false;
+static void copy_mtl_texture_to_surface_mem(id<MTLTexture> texture, void *vram)
+{
+    size_t width = texture.width, height = texture.height;
+    MTLRegion region = MTLRegionMake2D(0, 0, width, height);
+    [texture getBytes:vram
+          bytesPerRow:(width * 4)
+        bytesPerImage:(width * height * 4)
+           fromRegion:region
+          mipmapLevel:0
+                slice:0];
+}
 
-        BOOL r;
-        uint32_t width = surface_width(s->surface);
-        uint32_t height = surface_height(s->surface);
-        MTLRegion region = MTLRegionMake2D(0, 0, width, height);
-        id<MTLCommandQueue> commandQueue = [s->mtl newCommandQueue];
-        id<MTLCommandBuffer> mipmapCommandBuffer = [commandQueue commandBuffer];
-
-        r = [s->pgdisp encodeCurrentFrameToCommandBuffer:mipmapCommandBuffer
-                                                 texture:s->texture
-                                                  region:region];
-
-        if (r != YES) {
-            return;
-        }
-
-        id<MTLBlitCommandEncoder> blitCommandEncoder = [mipmapCommandBuffer blitCommandEncoder];
-        [blitCommandEncoder endEncoding];
-        [mipmapCommandBuffer commit];
-        [mipmapCommandBuffer waitUntilCompleted];
-        [s->texture getBytes:s->vram bytesPerRow:(width * 4)
-                                     bytesPerImage: (width * height * 4)
-                                     fromRegion: region
-                                     mipmapLevel: 0
-                                     slice: 0];
-
+static void apple_gfx_render_frame_completed(AppleGFXState *s, void *vram, id<MTLTexture> texture)
+{
+    --s->pending_frames;
+    assert(s->pending_frames >= 0);
+    
+    if (vram != s->vram) {
+        /* Display mode has changed, drop this old frame. */
+        assert(texture != s->texture);
+        g_free(vram);
+    } else {
+        copy_mtl_texture_to_surface_mem(texture, vram);
+        
         /* Need to render cursor manually if not supported by backend */
         if (!dpy_cursor_define_supported(s->con) && s->cursor && s->cursor_show) {
             pixman_image_t *image =
@@ -177,14 +195,40 @@ static void apple_gfx_fb_update_display(void *opaque)
             pixman_image_unref(image);
         }
 
-        dpy_gfx_update_full(s->con);
-
-        [commandQueue release];
+        if (s->gfx_update_requested) {
+            s->gfx_update_requested = false;
+            dpy_gfx_update_full(s->con);
+            graphic_hw_update_done(s->con);
+            s->new_frame_ready = false;
+        } else {
+            s->new_frame_ready = true;
+        }
     }
+    if (s->pending_frames > 0) {
+        apple_gfx_render_new_frame(s);
+    }
+}
+
+static void apple_gfx_fb_update_display(void *opaque)
+{
+    AppleGFXState *s = opaque;
+    
+    dispatch_async(s->render_queue, ^{
+        if (s->pending_frames > 0) {
+            s->gfx_update_requested = true;
+        } else {
+            if (s->new_frame_ready) {
+                dpy_gfx_update_full(s->con);
+                s->new_frame_ready = false;
+            }
+            graphic_hw_update_done(s->con);
+        }
+    });
 }
 
 static const GraphicHwOps apple_gfx_fb_ops = {
     .gfx_update = apple_gfx_fb_update_display,
+    .gfx_update_async = true,
 };
 
 static void update_cursor(AppleGFXState *s)
@@ -201,28 +245,22 @@ static void update_cursor(AppleGFXState *s)
 static void set_mode(AppleGFXState *s, uint32_t width, uint32_t height)
 {
     void *vram = NULL;
-    void *old_vram = s->vram;
     DisplaySurface *surface;
     MTLTextureDescriptor *textureDescriptor;
-    id<MTLTexture> old_texture = nil;
     id<MTLTexture> texture = nil;
-    bool locking_required = false;
+    __block bool no_change = false;
     
-    locking_required = !qemu_mutex_iothread_locked();
-    if (locking_required) {
-        qemu_mutex_lock_iothread();
-    }
-    if (s->surface &&
-        width == surface_width(s->surface) &&
-        height == surface_height(s->surface)) {
-        if (locking_required) {
-            qemu_mutex_unlock_iothread();
-        }
+    dispatch_sync(s->render_queue,
+        ^{
+            if (s->surface &&
+                width == surface_width(s->surface) &&
+                height == surface_height(s->surface)) {
+                no_change = true;
+            }
+        });
+    
+    if (no_change)
         return;
-    }
-    if (locking_required) {
-        qemu_mutex_unlock_iothread();
-    }
 
     vram = g_malloc0(width * height * 4);
     surface = qemu_create_displaysurface_from(width, height, PIXMAN_LE_a8r8g8b8,
@@ -237,21 +275,23 @@ static void set_mode(AppleGFXState *s, uint32_t width, uint32_t height)
         texture = [s->mtl newTextureWithDescriptor:textureDescriptor];
     }
     
-    if (locking_required) {
-        qemu_mutex_lock_iothread();
-    }
-    old_vram = s->vram;
-    s->vram = vram;
-    s->surface = surface;
-    dpy_gfx_replace_surface(s->con, surface);
-    old_texture = s->texture;
-    s->texture = texture;
-    if (locking_required) {
-        qemu_mutex_unlock_iothread();
-    }
-    
-    g_free(old_vram);
-    [old_texture release];
+    dispatch_sync(s->render_queue,
+        ^{
+            id<MTLTexture> old_texture = nil;
+            void *old_vram = s->vram;
+            s->vram = vram;
+            s->surface = surface;
+            
+            dpy_gfx_replace_surface(s->con, surface);
+            
+            old_texture = s->texture;
+            s->texture = texture;
+            [old_texture release];
+
+            if (s->pending_frames == 0) {
+                g_free(old_vram);
+            }
+        });
 }
 
 static void create_fb(AppleGFXState *s)
@@ -356,10 +396,18 @@ static PGDisplayDescriptor *apple_gfx_prepare_display_handlers(AppleGFXState *s)
     disp_desc.queue = dispatch_get_main_queue();
     disp_desc.newFrameEventHandler = ^(void) {
         trace_apple_gfx_new_frame();
-
-        /* Tell QEMU gfx stack that a new frame arrived */
-        s->handles_frames = true;
-        s->new_frame = true;
+        dispatch_async(s->render_queue, ^{
+            /* Drop frames if we get too far ahead. */
+            if (s->pending_frames >= 2)
+                return;
+            ++s->pending_frames;
+            if (s->pending_frames > 1) {
+                return;
+            }
+            @autoreleasepool {
+                apple_gfx_render_new_frame(s);
+            }
+        });
     };
     disp_desc.modeChangeHandler = ^(PGDisplayCoord_t sizeInPixels, OSType pixelFormat) {
         trace_apple_gfx_mode_change(sizeInPixels.x, sizeInPixels.y);
@@ -424,7 +472,9 @@ void apple_gfx_common_realize(AppleGFXState *s, PGDeviceDescriptor *desc)
     PGDisplayDescriptor *disp_desc = nil;
 
     QTAILQ_INIT(&s->tasks);
+    s->render_queue = dispatch_queue_create("apple-gfx.render", DISPATCH_QUEUE_SERIAL);
     s->mtl = MTLCreateSystemDefaultDevice();
+    s->mtl_queue = [s->mtl newCommandQueue];
 
     desc.device = s->mtl;
 
