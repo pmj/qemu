@@ -53,7 +53,7 @@ typedef bool(^IOSFCRaiseInterrupt)(uint32_t vector);
 typedef bool(^IOSFCUnmapMemory)(void *a, void *b, void *c, void *d, void *e, void *f);
 typedef bool(^IOSFCMapMemory)(uint64_t phys, uint64_t len, bool ro, void **va, void *e, void *f);
 
-@interface PGDeviceDescriptorExt : PGDeviceDescriptor
+@interface PGDeviceDescriptor (IOSurfaceMapper)
 @property (readwrite, nonatomic) bool usingIOSurfaceMapper;
 @end
 
@@ -352,7 +352,6 @@ static void apple_gfx_realize(DeviceState *dev, Error **errp)
     PGDeviceDescriptor *desc = [PGDeviceDescriptor new];
     PGDisplayDescriptor *disp_desc = [PGDisplayDescriptor new];
     PGIOSurfaceHostDeviceDescriptor *iosfc_desc = [PGIOSurfaceHostDeviceDescriptor new];
-    PGDeviceDescriptorExt *desc_ext = (PGDeviceDescriptorExt *)desc;
     PGDisplayMode *modes[ARRAY_SIZE(apple_gfx_modes)];
     int i;
 
@@ -364,7 +363,7 @@ static void apple_gfx_realize(DeviceState *dev, Error **errp)
     s->mtl = MTLCreateSystemDefaultDevice();
 
     desc.device = s->mtl;
-    desc_ext.usingIOSurfaceMapper = true;
+    desc.usingIOSurfaceMapper = true;
 
     desc.createTask = ^(uint64_t vmSize, void * _Nullable * _Nonnull baseAddress) {
         AppleGFXTask *task = apple_gfx_new_task(s, vmSize);
