@@ -28,8 +28,6 @@
 
 #define TYPE_APPLE_GFX          "apple-gfx"
 
-#define MAX_MRS 512
-
 static const PGDisplayCoord_t apple_gfx_modes[] = {
     { .x = 1440, .y = 1080 },
     { .x = 1280, .y = 1024 },
@@ -163,11 +161,7 @@ static uint64_t apple_gfx_read(void *opaque, hwaddr offset, unsigned size)
     AppleGFXState *s = opaque;
     uint64_t res = 0;
 
-    switch (offset) {
-    default:
-        res = [s->pgdev mmioReadAtOffset:offset];
-        break;
-    }
+    res = [s->pgdev mmioReadAtOffset:offset];
 
     trace_apple_gfx_read(offset, res);
 
@@ -263,7 +257,6 @@ static void apple_gfx_fb_update_display(void *opaque)
     }
 
     id<MTLBlitCommandEncoder> blitCommandEncoder = [mipmapCommandBuffer blitCommandEncoder];
-    [blitCommandEncoder generateMipmapsForTexture:s->texture];
     [blitCommandEncoder endEncoding];
     [mipmapCommandBuffer commit];
     [mipmapCommandBuffer waitUntilCompleted];
@@ -479,17 +472,8 @@ static void apple_gfx_realize(DeviceState *dev, Error **errp)
         }
     };
 
-    desc.addTraceRange = ^(PGPhysicalMemoryRange_t * _Nonnull range, PGTraceRangeHandler _Nonnull handler) {
-        /* Never saw this called. Return a bogus pointer so we catch access. */
-        return (PGTraceRange_t *)(void *)(uintptr_t)0x4242;
-    };
-
-    desc.removeTraceRange = ^(PGTraceRange_t * _Nonnull range) {
-        /* Never saw this called. Nothing to do. */
-    };
     s->pgdev = PGNewDeviceWithDescriptor(desc);
 
-    [disp_desc init];
     disp_desc.name = @"QEMU display";
     disp_desc.sizeInMillimeters = NSMakeSize(400., 300.); /* A 20" display */
     disp_desc.queue = dispatch_get_main_queue();
