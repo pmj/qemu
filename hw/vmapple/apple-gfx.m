@@ -79,10 +79,8 @@ typedef struct PGTask_s { // Name matches forward declaration in PG header
 typedef QTAILQ_HEAD(, PGTask_s) AppleGFXTaskList;
 
 typedef struct AppleGFXState {
-    /* Private */
     SysBusDevice parent_obj;
 
-    /* Public */
     qemu_irq irq_gfx;
     qemu_irq irq_iosfc;
     MemoryRegion iomem_gfx;
@@ -582,17 +580,14 @@ static void apple_gfx_class_init(ObjectClass *klass, void *data)
     dc->realize = apple_gfx_realize;
 }
 
-static TypeInfo apple_gfx_info = {
-    .name          = TYPE_APPLE_GFX,
-    .parent        = TYPE_SYS_BUS_DEVICE,
-    .instance_size = sizeof(AppleGFXState),
-    .class_init    = apple_gfx_class_init,
-    .instance_init = apple_gfx_init,
+static TypeInfo apple_gfx_types[] = {
+    {
+        .name          = TYPE_APPLE_GFX,
+        .parent        = TYPE_SYS_BUS_DEVICE,
+        .instance_size = sizeof(AppleGFXState),
+        .class_init    = apple_gfx_class_init,
+        .instance_init = apple_gfx_init,
+    }
 };
 
-static void apple_gfx_register_types(void)
-{
-    type_register_static(&apple_gfx_info);
-}
-
-type_init(apple_gfx_register_types)
+DEFINE_TYPES(apple_gfx_types)
