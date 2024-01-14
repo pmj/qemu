@@ -282,15 +282,23 @@ static void set_mode(AppleGFXState *s, uint32_t width, uint32_t height)
     MTLTextureDescriptor *textureDescriptor;
     id<MTLTexture> old_texture = nil;
     id<MTLTexture> texture = nil;
-
-    qemu_mutex_lock_iothread();
+    bool locking_required = false;
+    
+    locking_required = !qemu_mutex_iothread_locked();
+    if (locking_required) {
+        qemu_mutex_lock_iothread();
+    }
     if (s->surface &&
         width == surface_width(s->surface) &&
         height == surface_height(s->surface)) {
-        qemu_mutex_unlock_iothread();
+        if (locking_required) {
+            qemu_mutex_unlock_iothread();
+        }
         return;
     }
-    qemu_mutex_unlock_iothread();
+    if (locking_required) {
+        qemu_mutex_unlock_iothread();
+    }
 
     vram = g_malloc0(width * height * 4);
     surface = qemu_create_displaysurface_from(width, height, PIXMAN_LE_a8r8g8b8,
@@ -305,14 +313,18 @@ static void set_mode(AppleGFXState *s, uint32_t width, uint32_t height)
         texture = [s->mtl newTextureWithDescriptor:textureDescriptor];
     }
     
-    qemu_mutex_lock_iothread();
+    if (locking_required) {
+        qemu_mutex_lock_iothread();
+    }
     old_vram = s->vram;
     s->vram = vram;
     s->surface = surface;
     dpy_gfx_replace_surface(s->con, surface);
     old_texture = s->texture;
     s->texture = texture;
-    qemu_mutex_unlock_iothread();
+    if (locking_required) {
+        qemu_mutex_unlock_iothread();
+    }
     
     g_free(old_vram);
     [old_texture release];
