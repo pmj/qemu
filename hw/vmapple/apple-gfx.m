@@ -12,17 +12,9 @@
  * implements support to drive that library from within QEMU.
  */
 
-#include "qemu/osdep.h"
-#include "hw/irq.h"
 #include "apple-gfx.h"
-#include "migration/vmstate.h"
-#include "qemu/log.h"
-#include "qemu/module.h"
 #include "trace.h"
-#include "hw/sysbus.h"
-#include "hw/pci/msi.h"
-#include "crypto/hash.h"
-#include "sysemu/cpus.h"
+#include "qemu/main-loop.h"
 #include "ui/console.h"
 #include "monitor/monitor.h"
 #include <mach/mach_vm.h>
