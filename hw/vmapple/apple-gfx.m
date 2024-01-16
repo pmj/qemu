@@ -92,7 +92,23 @@ static void apple_gfx_write(void *opaque, hwaddr offset, uint64_t val, unsigned 
     qemu_mutex_lock_iothread();
 }
 
-static const MemoryRegionOps apple_gfx_ops = {
+static void apple_gfx_write_async(void *opaque, hwaddr offset, uint64_t val, unsigned size)
+{
+    AppleGFXState *s = opaque;
+    id<PGDevice> dev = s->pgdev;
+    dispatch_queue_t bg_queue = NULL;
+
+    trace_apple_gfx_write(offset, val);
+
+    bg_queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0ul);
+    [dev retain];
+    dispatch_async(bg_queue, ^{
+        [dev mmioWriteAtOffset:offset value:val];
+        [dev release];
+    });
+}
+
+static MemoryRegionOps apple_gfx_ops = {
     .read = apple_gfx_read,
     .write = apple_gfx_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
@@ -248,6 +264,9 @@ static void create_fb(AppleGFXState *s)
 
 void apple_gfx_common_init(Object *obj, AppleGFXState *s, const char* resources_name)
 {
+#ifdef __x86_64__
+    apple_gfx_ops.write = apple_gfx_write_async;
+#endif
     memory_region_init_io(&s->iomem_gfx, obj, &apple_gfx_ops, s, resources_name, 0x4000);
 }
 
