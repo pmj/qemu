@@ -22,6 +22,7 @@
 #include "hw/arm/boot.h"
 #include "hw/arm/primecell.h"
 #include "hw/boards.h"
+#include "hw/usb.h"
 #include "net/net.h"
 #include "sysemu/sysemu.h"
 #include "sysemu/runstate.h"
@@ -59,6 +60,7 @@ struct VMAppleMachineClass {
 
 struct VMAppleMachineState {
     MachineState parent;
+    
     Notifier machine_done;
     struct arm_boot_info bootinfo;
     MemMapEntry *memmap;
@@ -403,8 +405,7 @@ static void create_pcie(VMAppleMachineState *vms)
     DeviceState *dev;
     int i;
     PCIHostState *pci;
-    DeviceState *virtio_tablet;
-    DeviceState *virtio_keyboard;
+    DeviceState *xhci_controller;
 
     dev = qdev_new(TYPE_GPEX_HOST);
     qdev_prop_set_uint32(dev, "nr-irqs", GPEX_NUM_IRQS);
@@ -446,14 +447,12 @@ static void create_pcie(VMAppleMachineState *vms)
             pci_nic_init_nofail(nd, pci->bus, nd->model, NULL);
         }
     }
-
-    virtio_tablet = qdev_new("virtio-tablet-pci");
-    qdev_realize(virtio_tablet, BUS(pci->bus), &error_fatal);
-    object_unref(virtio_tablet);
-
-    virtio_keyboard = qdev_new("virtio-keyboard-pci");
-    qdev_realize(virtio_keyboard, BUS(pci->bus), &error_fatal);
-    object_unref(virtio_keyboard);
+    
+    xhci_controller = qdev_new("qemu-xhci");
+    qdev_realize(xhci_controller, BUS(pci->bus), &error_fatal);
+    object_unref(xhci_controller);
+    usb_create_simple(usb_bus_find(-1), "usb-kbd");
+    usb_create_simple(usb_bus_find(-1), "usb-tablet");
 }
 
 static void vmapple_reset(void *opaque)
@@ -475,6 +474,7 @@ static void mach_vmapple_init(MachineState *machine)
     unsigned int max_cpus = machine->smp.max_cpus;
 
     vms->memmap = memmap;
+    machine->usb = true;
 
     possible_cpus = mc->possible_cpu_arch_ids(machine);
     assert(possible_cpus->len == max_cpus);
