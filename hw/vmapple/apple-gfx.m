@@ -15,14 +15,18 @@
 #include "apple-gfx.h"
 #include "trace.h"
 #include "qemu/main-loop.h"
+#include "qemu/cutils.h"
+#include "qapi/visitor.h"
+#include "qapi/error.h"
 #include "ui/console.h"
 #include "monitor/monitor.h"
 #include <mach/mach_vm.h>
 #import <ParavirtualizedGraphics/ParavirtualizedGraphics.h>
 
-static const PGDisplayCoord_t apple_gfx_modes[] = {
-    { .x = 1440, .y = 1080 },
-    { .x = 1280, .y = 1024 },
+static const AppleGFXDisplayMode apple_gfx_fallback_modes[] = {
+    { 1920, 1080, 60 },
+    { 1440, 1080, 60 },
+    { 1280, 1024, 60 },
 };
 
 static dispatch_queue_t pg_task_q = NULL;
@@ -297,7 +301,7 @@ static void set_mode(AppleGFXState *s, uint32_t width, uint32_t height)
 static void create_fb(AppleGFXState *s)
 {
     s->con = graphic_console_init(NULL, 0, &apple_gfx_fb_ops, s);
-    set_mode(s, 1440, 1080);
+    //set_mode(s, 1440, 1080);
 
     s->cursor_show = true;
 }
@@ -320,7 +324,6 @@ static void apple_gfx_register_task_memory_mapping_handlers(AppleGFXState *s, PG
     };
 
     desc.destroyTask = ^(AppleGFXTask * _Nonnull task) {
-				assert_thread_safety();
         trace_apple_gfx_destroy_task(task);
         QTAILQ_REMOVE(&s->tasks, task, node);
         mach_vm_deallocate(mach_task_self(), task->address, task->len);
@@ -364,7 +367,6 @@ static void apple_gfx_register_task_memory_mapping_handlers(AppleGFXState *s, PG
     };
 
     desc.unmapMemory = ^(AppleGFXTask * _Nonnull task, uint64_t virtualOffset, uint64_t length) {
-        assert_thread_safety();
         kern_return_t r;
         mach_vm_address_t range_address;
 
@@ -446,20 +448,24 @@ static PGDisplayDescriptor *apple_gfx_prepare_display_handlers(AppleGFXState *s)
     return disp_desc;
 }
 
-static NSArray<PGDisplayMode*>* apple_gfx_prepare_display_mode_array(void)
+static NSArray<PGDisplayMode*>* apple_gfx_prepare_display_mode_array(
+    const AppleGFXDisplayMode display_modes[], int display_mode_count)
 {
-    PGDisplayMode *modes[ARRAY_SIZE(apple_gfx_modes)];
+    PGDisplayMode *modes[display_mode_count];
     NSArray<PGDisplayMode*>* mode_array = nil;
     int i;
     
-    for (i = 0; i < ARRAY_SIZE(apple_gfx_modes); i++) {
+    for (i = 0; i < display_mode_count; i++) {
+        const AppleGFXDisplayMode *mode = &display_modes[i];
+        PGDisplayCoord_t mode_size = { mode->width_px, mode->height_px };
         modes[i] =
-            [[PGDisplayMode alloc] initWithSizeInPixels:apple_gfx_modes[i] refreshRateInHz:60.];
+            [[PGDisplayMode alloc] initWithSizeInPixels:mode_size
+                                        refreshRateInHz:mode->refresh_rate_hz];
     }
 
-    mode_array = [NSArray arrayWithObjects:modes count:ARRAY_SIZE(apple_gfx_modes)];
+    mode_array = [NSArray arrayWithObjects:modes count:display_mode_count];
 
-    for (i = 0; i < ARRAY_SIZE(apple_gfx_modes); i++) {
+    for (i = 0; i < display_mode_count; i++) {
         [modes[i] release];
         modes[i] = nil;
     }
@@ -470,6 +476,8 @@ static NSArray<PGDisplayMode*>* apple_gfx_prepare_display_mode_array(void)
 void apple_gfx_common_realize(AppleGFXState *s, PGDeviceDescriptor *desc)
 {
     PGDisplayDescriptor *disp_desc = nil;
+    const AppleGFXDisplayMode *display_modes = apple_gfx_fallback_modes;
+    int num_display_modes = ARRAY_SIZE(apple_gfx_fallback_modes);
 
     QTAILQ_INIT(&s->tasks);
     s->render_queue = dispatch_queue_create("apple-gfx.render", DISPATCH_QUEUE_SERIAL);
@@ -485,8 +493,122 @@ void apple_gfx_common_realize(AppleGFXState *s, PGDeviceDescriptor *desc)
     disp_desc = apple_gfx_prepare_display_handlers(s);
     s->pgdisp = [s->pgdev newDisplayWithDescriptor:disp_desc port:0 serialNum:1234];
     [disp_desc release];
-    s->pgdisp.modeList = apple_gfx_prepare_display_mode_array();
+    
+    if (s->display_modes.modes != NULL && s->display_modes.modes->len > 0) {
+        display_modes =
+            &g_array_index(s->display_modes.modes, AppleGFXDisplayMode, 0);
+        num_display_modes = s->display_modes.modes->len;
+    }
+    s->pgdisp.modeList = apple_gfx_prepare_display_mode_array(display_modes,
+                                                              num_display_modes);
 
     create_fb(s);
 }
 
+void apple_gfx_get_display_modes(AppleGFXDisplayModeList *mode_list, Visitor *v,
+                                 const char *name, Error **errp)
+{
+    GArray *modes = mode_list->modes;
+    
+    size_t buffer_size = (5 + 1 + 5 + 1 + 5 + 1) * modes->len + 1;
+    
+    char buffer[buffer_size];
+    char *pos = buffer;
+    
+    unsigned used = 0;
+    buffer[0] = '\0'; // defend against zero-length array
+    for (guint i = 0; i < modes->len; ++i)
+    {
+        AppleGFXDisplayMode *mode = &g_array_index(modes, AppleGFXDisplayMode, i);
+        int  rc = snprintf(pos, buffer_size - used, "%s%"PRIu16"x%"PRIu16"@%"PRIu16,
+            i > 0 ? ":" : "",
+            mode->width_px, mode->height_px, mode->refresh_rate_hz);
+        used += rc;
+        pos += rc;
+        assert(used < buffer_size);
+    }
+    
+    pos = buffer;
+    visit_type_str(v, name, &pos, errp);
+}
+
+void apple_gfx_set_display_modes(AppleGFXDisplayModeList *mode_list, Visitor *v,
+                                 const char *name, Error **errp)
+{
+    Error *local_err = NULL;
+    const char *endptr;
+    char *str;
+    int ret;
+    unsigned int val;
+    uint32_t num_modes;
+    GArray *modes;
+    uint32_t mode_idx;
+
+    visit_type_str(v, name, &str, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        return;
+    }
+    
+    // Count colons to estimate modes. No leading/trailing colons so start at 1.
+    num_modes = 1;
+    for (size_t i = 0; str[i] != '\0'; ++i)
+    {
+        if (str[i] == ':')
+            ++num_modes;
+    }
+
+    modes = g_array_sized_new(false, true, sizeof(AppleGFXDisplayMode), num_modes);
+    
+    endptr = str;
+    for (mode_idx = 0; mode_idx < num_modes; ++mode_idx)
+    {
+        AppleGFXDisplayMode mode = {};
+        if (mode_idx > 0)
+        {
+            if (*endptr != ':') {
+                goto separator_error;
+            }
+            ++endptr;
+        }
+        
+        ret = qemu_strtoui(endptr, &endptr, 10, &val);
+        if (ret || val > UINT16_MAX || val == 0) {
+            error_setg(errp, "width of '%s'"
+                   " must be a decimal integer number of pixels in the range 1..65535", name);
+            goto out;
+        }
+        mode.width_px = val;
+        if (*endptr != 'x') {
+            goto separator_error;
+        }
+
+        ret = qemu_strtoui(endptr + 1, &endptr, 10, &val);
+        if (ret || val > UINT16_MAX || val == 0) {
+            error_setg(errp, "height of '%s'"
+                       " must be a decimal integer number of pixels in the range 1..65535", name);
+            goto out;
+        }
+        mode.height_px = val;
+        if (*endptr != '@') {
+            goto separator_error;
+        }
+
+        ret = qemu_strtoui(endptr + 1, &endptr, 10, &val);
+        if (ret) {
+            error_setg(errp, "refresh rate of '%s'"
+                       " must be a non-negative decimal integer (Hertz)", name);
+        }
+        mode.refresh_rate_hz = val;
+        g_array_append_val(modes, mode);
+    }
+    
+    mode_list->modes = modes;
+    goto out;
+
+separator_error:
+    error_setg(errp, "Each display mode takes the format '<width>x<height>@<rate>', modes are separated by colons. (:)");
+out:
+    g_free(str);
+    return;
+}
