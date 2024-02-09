@@ -14,6 +14,7 @@
 
 #include "apple-gfx.h"
 #include "trace.h"
+#include "qemu-main.h"
 #include "qemu/main-loop.h"
 #include "qemu/cutils.h"
 #include "qapi/visitor.h"
@@ -312,6 +313,8 @@ void apple_gfx_common_init(Object *obj, AppleGFXState *s, const char* resources_
     apple_gfx_ops.write = apple_gfx_write_async;
 #endif
     memory_region_init_io(&s->iomem_gfx, obj, &apple_gfx_ops, s, resources_name, 0x4000);
+    
+    cocoa_enable_runloop_on_main_thread();
 }
 
 static void apple_gfx_register_task_memory_mapping_handlers(AppleGFXState *s, PGDeviceDescriptor *desc)
