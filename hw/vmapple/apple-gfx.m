@@ -21,6 +21,7 @@
 #include "qapi/error.h"
 #include "ui/console.h"
 #include "monitor/monitor.h"
+#include "qemu-main.h"
 #include <mach/mach_vm.h>
 #import <ParavirtualizedGraphics/ParavirtualizedGraphics.h>
 
