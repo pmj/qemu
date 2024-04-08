@@ -28,7 +28,14 @@ static void apple_gfx_init_option_rom_path(void)
 static void apple_gfx_pci_init(Object *obj)
 {
     AppleGFXPCIState *s = APPLE_GFX_PCI(obj);
-    
+
+    if (!apple_gfx_pci_option_rom_path) {
+        /* Done on device not class init to avoid -daemonize ObjC fork crash */
+        PCIDeviceClass *pci = PCI_DEVICE_CLASS(object_get_class(obj));
+        apple_gfx_init_option_rom_path();
+        pci->romfile = apple_gfx_pci_option_rom_path;
+    }
+
     apple_gfx_common_init(obj, &s->common, TYPE_APPLE_GFX_PCI);
 }
 
@@ -131,11 +138,6 @@ static void apple_gfx_pci_class_init(ObjectClass *klass, void *data)
     pci->device_id = PG_PCI_DEVICE_ID;
     pci->class_id = PCI_CLASS_DISPLAY_OTHER;
     pci->realize = apple_gfx_pci_realize;
-    
-    if (!apple_gfx_pci_option_rom_path) {
-        apple_gfx_init_option_rom_path();
-    }
-    pci->romfile = apple_gfx_pci_option_rom_path;
     
     device_class_set_props(dc, apple_gfx_pci_properties);
 }
